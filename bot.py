@@ -27,7 +27,7 @@ from telegram.ext import (
     filters,
 )
 
-from config import TELEGRAM_TOKEN, FREE_SCANS_PER_MONTH, BOT_NAME
+from config import TELEGRAM_TOKEN, FREE_SCANS_PER_MONTH, BOT_NAME, ADMIN_ID
 from database import (
     init_db,
     add_user,
@@ -173,8 +173,8 @@ def back_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def premium_keyboard() -> InlineKeyboardMarkup:
-    """Кнопки раздела Премиум."""
+def premium_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
+    """Кнопки раздела Премиум (демо-доступ доступен только администратору)."""
     rows = [
         [
             InlineKeyboardButton(
@@ -183,21 +183,22 @@ def premium_keyboard() -> InlineKeyboardMarkup:
                 icon_custom_emoji_id=btn_id("money"),
             )
         ],
-        [
+    ]
+    if user_id == ADMIN_ID:
+        rows.append([
             InlineKeyboardButton(
                 text="Тестовый доступ (демо)",
                 callback_data="activate_test_premium",
                 icon_custom_emoji_id=btn_id("gift"),
             )
-        ],
-        [
-            InlineKeyboardButton(
-                text="Назад",
-                callback_data="back_to_main",
-                icon_custom_emoji_id=btn_id("back"),
-            )
-        ],
-    ]
+        ])
+    rows.append([
+        InlineKeyboardButton(
+            text="Назад",
+            callback_data="back_to_main",
+            icon_custom_emoji_id=btn_id("back"),
+        )
+    ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -249,7 +250,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             text=limit_msg,
             parse_mode=ParseMode.HTML,
-            reply_markup=premium_keyboard(),
+            reply_markup=premium_keyboard(user.id),
         )
         return
 
@@ -375,19 +376,20 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
     elif data == "premium":
+        demo_hint = " или попробуйте демо" if user.id == ADMIN_ID else ""
         text = (
-            "💎 <b>LabelSpy Premium</b>\n\n"
+            f"{tag('money')} <b>LabelSpy Premium</b>\n\n"
             "Откройте все возможности:\n"
-            "• ✅ <b>Безлимитные сканы</b> 24/7\n"
-            "• 📊 <b>Приоритетная скорость</b> анализа\n"
-            "• 📁 <b>Сравнение составов</b> двух продуктов\n\n"
-            "<b>Стоимость подписки:</b> <b>50 ⭐ Stars (~$0.99)</b>\n\n"
-            "<i>Нажмите кнопку ниже для оплаты или попробуйте демо:</i>"
+            f"• {tag('check')} <b>Безлимитные сканы</b> 24/7\n"
+            f"• {tag('growth_chart')} <b>Приоритетная скорость</b> анализа\n"
+            f"• {tag('file')} <b>Сравнение составов</b> двух продуктов\n\n"
+            f"<b>Стоимость подписки:</b> <b>50 ⭐ Stars (~$0.99)</b>\n\n"
+            f"<i>Нажмите кнопку ниже для оплаты{demo_hint}:</i>"
         )
         await query.message.edit_text(
             text=text,
             parse_mode=ParseMode.HTML,
-            reply_markup=premium_keyboard(),
+            reply_markup=premium_keyboard(user.id),
         )
 
     elif data == "buy_premium_stars":
@@ -408,6 +410,9 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
     elif data == "activate_test_premium":
+        if user.id != ADMIN_ID:
+            await query.answer("Эта опция доступна только администратору.", show_alert=True)
+            return
         set_premium(user.id, True)
         await query.message.edit_text(
             "🎉 <b>Поздравляем! Демо-Премиум активирован!</b>\n\n"
@@ -495,6 +500,7 @@ async def handle_text_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif "премиум" in text:
+        demo_hint = " или попробуйте демо" if user.id == ADMIN_ID else ""
         msg = (
             f"{tag('money')} <b>LabelSpy Premium</b>\n\n"
             "Откройте все возможности:\n"
@@ -502,12 +508,12 @@ async def handle_text_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• {tag('growth_chart')} <b>Приоритетная скорость</b> анализа\n"
             f"• {tag('file')} <b>Сравнение составов</b> двух продуктов\n\n"
             f"<b>Стоимость подписки:</b> <b>50 ⭐ Stars (~$0.99)</b>\n\n"
-            "<i>Нажмите кнопку ниже для оплаты или попробуйте демо:</i>"
+            f"<i>Нажмите кнопку ниже для оплаты{demo_hint}:</i>"
         )
         await update.message.reply_text(
             text=msg,
             parse_mode=ParseMode.HTML,
-            reply_markup=premium_keyboard(),
+            reply_markup=premium_keyboard(user.id),
         )
 
     elif "сервис" in text or "инфо" in text:

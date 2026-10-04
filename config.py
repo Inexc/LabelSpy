@@ -14,3 +14,7 @@ FREE_SCANS_PER_MONTH = 5
 
 # Название бота
 BOT_NAME = "LabelSpy"
+
+# ID администратора бота
+ADMIN_ID = int(os.getenv("ADMIN_ID", "871764715"))
+
