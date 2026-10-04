@@ -35,7 +35,7 @@ from database import (
     set_premium,
     get_user_info,
 )
-from emoji_helper import tag
+from emoji_helper import tag, btn_id
 from analyzer import analyze_label, format_analysis_html
 
 logging.basicConfig(
@@ -74,15 +74,31 @@ if sys.platform == "win32":
 
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
-    """Главное меню с яркими иконками в кнопках."""
+    """Главное меню с кастомными иконками в кнопках."""
     rows = [
         [
-            InlineKeyboardButton(text="📷 Сделать скан", callback_data="guide"),
-            InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile"),
+            InlineKeyboardButton(
+                text="Сделать скан",
+                callback_data="guide",
+                icon_custom_emoji_id=btn_id("photo"),
+            ),
+            InlineKeyboardButton(
+                text="Мой профиль",
+                callback_data="profile",
+                icon_custom_emoji_id=btn_id("profile"),
+            ),
         ],
         [
-            InlineKeyboardButton(text="💎 Премиум", callback_data="premium"),
-            InlineKeyboardButton(text="ℹ️ О сервисе", callback_data="about"),
+            InlineKeyboardButton(
+                text="Премиум",
+                callback_data="premium",
+                icon_custom_emoji_id=btn_id("money"),
+            ),
+            InlineKeyboardButton(
+                text="О сервисе",
+                callback_data="about",
+                icon_custom_emoji_id=btn_id("info"),
+            ),
         ],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -92,11 +108,23 @@ def analysis_keyboard() -> InlineKeyboardMarkup:
     """Кнопки под результатом анализа состава."""
     rows = [
         [
-            InlineKeyboardButton(text="🔄 Сканировать ещё", callback_data="guide"),
-            InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile"),
+            InlineKeyboardButton(
+                text="Сканировать ещё",
+                callback_data="guide",
+                icon_custom_emoji_id=btn_id("loading"),
+            ),
+            InlineKeyboardButton(
+                text="Мой профиль",
+                callback_data="profile",
+                icon_custom_emoji_id=btn_id("profile"),
+            ),
         ],
         [
-            InlineKeyboardButton(text="💎 Оформить Премиум", callback_data="premium"),
+            InlineKeyboardButton(
+                text="Оформить Премиум",
+                callback_data="premium",
+                icon_custom_emoji_id=btn_id("money"),
+            ),
         ],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -106,7 +134,11 @@ def back_keyboard() -> InlineKeyboardMarkup:
     """Кнопка возврата в главное меню."""
     rows = [
         [
-            InlineKeyboardButton(text="◁ Назад", callback_data="back_to_main")
+            InlineKeyboardButton(
+                text="Назад",
+                callback_data="back_to_main",
+                icon_custom_emoji_id=btn_id("back"),
+            )
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -116,13 +148,25 @@ def premium_keyboard() -> InlineKeyboardMarkup:
     """Кнопки раздела Премиум."""
     rows = [
         [
-            InlineKeyboardButton(text="⭐ Оплатить 50 Stars (~$0.99)", callback_data="buy_premium_stars")
+            InlineKeyboardButton(
+                text="Оплатить 50 Stars (~$0.99)",
+                callback_data="buy_premium_stars",
+                icon_custom_emoji_id=btn_id("money"),
+            )
         ],
         [
-            InlineKeyboardButton(text="🎁 Тестовый доступ (демо)", callback_data="activate_test_premium")
+            InlineKeyboardButton(
+                text="Тестовый доступ (демо)",
+                callback_data="activate_test_premium",
+                icon_custom_emoji_id=btn_id("gift"),
+            )
         ],
         [
-            InlineKeyboardButton(text="◁ Назад", callback_data="back_to_main")
+            InlineKeyboardButton(
+                text="Назад",
+                callback_data="back_to_main",
+                icon_custom_emoji_id=btn_id("back"),
+            )
         ],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -263,9 +307,19 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         rows = []
         if not has_prem:
             rows.append([
-                InlineKeyboardButton(text="💎 Оформить Премиум", callback_data="premium")
+                InlineKeyboardButton(
+                    text="Оформить Премиум",
+                    callback_data="premium",
+                    icon_custom_emoji_id=btn_id("money"),
+                )
             ])
-        rows.append([InlineKeyboardButton(text="◁ Назад", callback_data="back_to_main")])
+        rows.append([
+            InlineKeyboardButton(
+                text="Назад",
+                callback_data="back_to_main",
+                icon_custom_emoji_id=btn_id("back"),
+            )
+        ])
 
         await query.message.edit_text(
             text=text,
