@@ -1,0 +1,337 @@
+"""
+Telegram бот LabelSpy — AI-сканер состава продуктов и спортивного питания
+Кнопки с яркими визуальными эмодзи, работающими на всех устройствах.
+"""
+
+import logging
+import os
+import sys
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from telegram import (
+
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
+from telegram.constants import ParseMode, ChatAction
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
+)
+
+from config import TELEGRAM_TOKEN, FREE_SCANS_PER_MONTH, BOT_NAME
+from database import (
+    init_db,
+    add_user,
+    get_monthly_scan_count,
+    add_scan,
+    is_premium,
+    set_premium,
+    get_user_info,
+)
+from emoji_helper import tag
+from analyzer import analyze_label, format_analysis_html
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
+
+class HealthHandler(BaseHTTPRequestHandler):
+    """Эндпоинт для облачных хостингов (Render, Koyeb и др.)."""
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK - LabelSpy Bot is running!")
+
+    def log_message(self, format, *args):
+        pass
+
+
+def start_health_server():
+    """Запускает фоновый веб-сервер для проверки доступности."""
+    port = int(os.environ.get("PORT", 10000))
+    try:
+        server = HTTPServer(("0.0.0.0", port), HealthHandler)
+        server.serve_forever()
+    except Exception as e:
+        logger.warning(f"Health server error: {e}")
+
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    """Главное меню с яркими иконками в кнопках."""
+    rows = [
+        [
+            InlineKeyboardButton(text="📷 Сделать скан", callback_data="guide"),
+            InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile"),
+        ],
+        [
+            InlineKeyboardButton(text="💎 Премиум", callback_data="premium"),
+            InlineKeyboardButton(text="ℹ️ О сервисе", callback_data="about"),
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def analysis_keyboard() -> InlineKeyboardMarkup:
+    """Кнопки под результатом анализа состава."""
+    rows = [
+        [
+            InlineKeyboardButton(text="🔄 Сканировать ещё", callback_data="guide"),
+            InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile"),
+        ],
+        [
+            InlineKeyboardButton(text="💎 Оформить Премиум", callback_data="premium"),
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def back_keyboard() -> InlineKeyboardMarkup:
+    """Кнопка возврата в главное меню."""
+    rows = [
+        [
+            InlineKeyboardButton(text="◁ Назад", callback_data="back_to_main")
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def premium_keyboard() -> InlineKeyboardMarkup:
+    """Кнопки раздела Премиум."""
+    rows = [
+        [
+            InlineKeyboardButton(text="🎁 Активировать демо-Премиум", callback_data="activate_test_premium")
+        ],
+        [
+            InlineKeyboardButton(text="◁ Назад", callback_data="back_to_main")
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_start_text(user) -> str:
+    """Формирует приветственный текст с оформлением."""
+    scans_used = get_monthly_scan_count(user.id)
+    user_has_prem = is_premium(user.id)
+    limit_text = "Безлимитно" if user_has_prem else f"{FREE_SCANS_PER_MONTH - scans_used} из {FREE_SCANS_PER_MONTH}"
+
+    return (
+        f"{tag('bot')} <b>LABELSPY · AI СКАНИРОВАНИЕ СОСТАВА</b>\n\n"
+        f"<blockquote>🤖 Персональный независимый AI-анализатор чистоты продуктов и добавок прямо в Telegram.</blockquote>\n\n"
+        f"• {tag('file')} <b>Спортпит и витамины:</b> проверка реальных дозировок и качества сырья\n"
+        f"• {tag('cross')} <b>Контроль рисков:</b> выявление скрытого сахара, трансжиров и вредных добавок\n"
+        f"• {tag('stats')} <b>Экспертный вердикт:</b> честная оценка от 1 до 10\n\n"
+        f"🪙 <b>Ваш лимит сканов:</b> <code>{limit_text}</code>\n\n"
+        f"<i>📷 Отправьте фото этикетки с составом прямо в чат!</i>"
+    )
+
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /start."""
+    user = update.effective_user
+    add_user(user.id, user.username or "", user.first_name or "")
+    text = get_start_text(user)
+
+    await update.message.reply_text(
+        text=text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_menu_keyboard(),
+    )
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка фото этикетки."""
+    user = update.effective_user
+    add_user(user.id, user.username or "", user.first_name or "")
+    
+    user_has_prem = is_premium(user.id)
+    scans_used = get_monthly_scan_count(user.id)
+    
+    if not user_has_prem and scans_used >= FREE_SCANS_PER_MONTH:
+        limit_msg = (
+            f"❌ <b>Лимит бесплатных сканов исчерпан!</b>\n\n"
+            f"Вы использовали все {FREE_SCANS_PER_MONTH} бесплатных сканов в этом месяце.\n\n"
+            f"💎 Оформите <b>LabelSpy Premium</b> для безлимитного анализа!"
+        )
+        await update.message.reply_text(
+            text=limit_msg,
+            parse_mode=ParseMode.HTML,
+            reply_markup=premium_keyboard(),
+        )
+        return
+
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    status_msg = await update.message.reply_text(
+        "🔄 <b>Изучаю этикетку...</b>\n<i>AI читает состав и сверяет компоненты. Это займет несколько секунд.</i>",
+        parse_mode=ParseMode.HTML,
+    )
+
+    try:
+        photo_file = await update.message.photo[-1].get_file()
+        photo_bytes = await photo_file.download_as_bytearray()
+
+        analysis = await analyze_label(bytes(photo_bytes))
+        
+        product_name = analysis.get("product_name") if "error" not in analysis else "Нераспознано"
+        score = analysis.get("score") if "error" not in analysis else None
+        add_scan(user.id, product_name, score)
+
+        reply_html = format_analysis_html(analysis)
+
+        await status_msg.edit_text(
+            text=reply_html,
+            parse_mode=ParseMode.HTML,
+            reply_markup=analysis_keyboard(),
+        )
+
+    except Exception as e:
+        logger.error(f"Ошибка при обработке фото: {e}")
+        try:
+            await status_msg.edit_text(
+                "❌ <b>Произошла ошибка при анализе фото.</b>\nПожалуйста, отправьте фото еще раз чётче.",
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            pass
+
+
+async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка нажатий инлайн-кнопок."""
+    query = update.callback_query
+    await query.answer()
+    
+    user = query.from_user
+    data = query.data
+
+    if data == "back_to_main":
+        text = get_start_text(user)
+        await query.message.edit_text(
+            text=text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=main_menu_keyboard(),
+        )
+
+    elif data == "guide":
+        text = (
+            "📁 <b>Как сделать идеальный скан:</b>\n\n"
+            "1. Сфотографируйте блок <b>'Состав'</b> или <b>'Supplement Facts'</b>.\n"
+            "2. Держите камеру ровно при хорошем свете.\n"
+            "3. Убедитесь, что текст четкий и читаемый.\n"
+            "4. Отправьте фото прямо в этот чат!\n\n"
+            "🖋 <i>Бот одинаково хорошо читает составы на русском и английском языках.</i>"
+        )
+        await query.message.edit_text(
+            text=text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_keyboard(),
+        )
+
+    elif data == "profile":
+        scans_count = get_monthly_scan_count(user.id)
+        has_prem = is_premium(user.id)
+        status_str = "💎 <b>Premium Безлимит</b>" if has_prem else f"<b>Бесплатный</b> ({scans_count}/{FREE_SCANS_PER_MONTH} использовано)"
+
+        text = (
+            "👤 <b>Профиль пользователя</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Имя:</b> {user.first_name}\n"
+            f"<b>ID:</b> <code>{user.id}</code>\n"
+            f"<b>Статус:</b> {status_str}\n"
+            f"<b>Сканов в этом месяце:</b> <code>{scans_count}</code>\n"
+        )
+        
+        rows = []
+        if not has_prem:
+            rows.append([
+                InlineKeyboardButton(text="💎 Оформить Премиум", callback_data="premium")
+            ])
+        rows.append([InlineKeyboardButton(text="◁ Назад", callback_data="back_to_main")])
+
+        await query.message.edit_text(
+            text=text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        )
+
+    elif data == "about":
+        text = (
+            f"ℹ️ <b>О сервисе {BOT_NAME}</b>\n\n"
+            f"🤖 <b>LabelSpy</b> — независимый эксперт по составам продуктов и добавок.\n\n"
+            f"Многие производители маскируют вредные добавки и экономят на сырье.\n\n"
+            f"<b>✅ Что проверяет наш AI:</b>\n"
+            f"• Чистоту спортивных добавок (протеин, креатин, BCAA)\n"
+            f"• Наличие опасных красителей и консервантов\n"
+            f"• Скрытый сахар и подсластители\n"
+            f"• Качество и биодоступность витаминов\n\n"
+            f"<i>Выбирайте продукты осознанно!</i>"
+        )
+        await query.message.edit_text(
+            text=text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_keyboard(),
+        )
+
+    elif data == "premium":
+        text = (
+            "💎 <b>LabelSpy Premium</b>\n\n"
+            "Откройте все возможности:\n"
+            "• ✅ <b>Безлимитные сканы</b> 24/7\n"
+            "• 📊 <b>Приоритетная скорость</b> анализа\n"
+            "• 📁 <b>Сравнение составов</b> двух продуктов\n\n"
+            "<b>Стоимость подписки:</b> <b>$4.99/мес</b>\n\n"
+            "<i>Нажмите кнопку ниже, чтобы включить демо-премиум:</i>"
+        )
+        await query.message.edit_text(
+            text=text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=premium_keyboard(),
+        )
+
+    elif data == "activate_test_premium":
+        set_premium(user.id, True)
+        await query.message.edit_text(
+            "🎉 <b>Поздравляем! Премиум активирован!</b>\n\n"
+            "Теперь у вас безлимитные сканы без ограничений ✅.\n"
+            "Отправьте любое фото этикетки!",
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_keyboard(),
+        )
+
+
+def main():
+    """Запуск бота."""
+    print("Инициализация базы данных...")
+    init_db()
+
+    # Запускаем фоновый веб-сервер для облачных хостингов
+    threading.Thread(target=start_health_server, daemon=True).start()
+
+    print(f"Запуск {BOT_NAME}...")
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CallbackQueryHandler(handle_callback_query))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+
+    print(f"Бот @labelspy_bot успешно запущен!")
+    application.run_polling()
+
+
+if __name__ == "__main__":
+    main()
