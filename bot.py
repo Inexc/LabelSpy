@@ -9,10 +9,10 @@ import sys
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import (
-
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    LabeledPrice,
 )
 from telegram.constants import ParseMode, ChatAction
 from telegram.ext import (
@@ -20,6 +20,7 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
+    PreCheckoutQueryHandler,
     ContextTypes,
     filters,
 )
@@ -115,13 +116,17 @@ def premium_keyboard() -> InlineKeyboardMarkup:
     """Кнопки раздела Премиум."""
     rows = [
         [
-            InlineKeyboardButton(text="🎁 Активировать демо-Премиум", callback_data="activate_test_premium")
+            InlineKeyboardButton(text="⭐ Оплатить 250 Stars (~$4.99)", callback_data="buy_premium_stars")
+        ],
+        [
+            InlineKeyboardButton(text="🎁 Тестовый доступ (демо)", callback_data="activate_test_premium")
         ],
         [
             InlineKeyboardButton(text="◁ Назад", callback_data="back_to_main")
         ],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
 
 
 def get_start_text(user) -> str:
@@ -302,15 +307,58 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             reply_markup=premium_keyboard(),
         )
 
+    elif data == "buy_premium_stars":
+        title = "LabelSpy Premium (1 месяц)"
+        description = "Безлимитный AI-анализ составов продуктов, добавок и спортивного питания 24/7."
+        payload = f"premium_1m_{user.id}"
+        currency = "XTR"
+        prices = [LabeledPrice("Подписка на 30 дней", 250)]
+
+        await context.bot.send_invoice(
+            chat_id=query.message.chat_id,
+            title=title,
+            description=description,
+            payload=payload,
+            provider_token="",  # Для Telegram Stars provider_token всегда пустая строка
+            currency=currency,
+            prices=prices,
+        )
+
     elif data == "activate_test_premium":
         set_premium(user.id, True)
         await query.message.edit_text(
-            "🎉 <b>Поздравляем! Премиум активирован!</b>\n\n"
+            "🎉 <b>Поздравляем! Демо-Премиум активирован!</b>\n\n"
             "Теперь у вас безлимитные сканы без ограничений ✅.\n"
             "Отправьте любое фото этикетки!",
             parse_mode=ParseMode.HTML,
             reply_markup=back_keyboard(),
         )
+
+
+async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подтверждение готовности принять оплату в Stars."""
+    query = update.pre_checkout_query
+    await query.answer(ok=True)
+
+
+async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка успешной оплаты через Telegram Stars."""
+    user = update.effective_user
+    payment = update.message.successful_payment
+
+    # Активируем статус в базе данных
+    set_premium(user.id, True)
+
+    text = (
+        f"🎉 <b>Оплата прошла успешно!</b>\n\n"
+        f"Вам начислен <b>LabelSpy Premium</b> на 1 месяц.\n"
+        f"Сумма: <code>{payment.total_amount} ⭐ Telegram Stars</code>.\n\n"
+        f"Теперь у вас полный безлимит на сканирование этикеток 24/7! 📷"
+    )
+    await update.message.reply_text(
+        text=text,
+        parse_mode=ParseMode.HTML,
+    )
 
 
 def main():
@@ -324,13 +372,15 @@ def main():
     print(f"Запуск {BOT_NAME}...")
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
+    application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
+    application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
     print(f"Бот @labelspy_bot успешно запущен!")
     application.run_polling()
+
 
 
 if __name__ == "__main__":
