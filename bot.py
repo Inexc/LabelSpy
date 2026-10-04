@@ -12,6 +12,8 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
     LabeledPrice,
 )
 from telegram.constants import ParseMode, ChatAction
@@ -71,6 +73,33 @@ if sys.platform == "win32":
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
+
+
+def main_reply_keyboard() -> ReplyKeyboardMarkup:
+    """Постоянное нижнее меню под полем ввода с кастомными иконками."""
+    rows = [
+        [
+            KeyboardButton(
+                text="Сделать скан",
+                icon_custom_emoji_id=btn_id("photo"),
+            ),
+            KeyboardButton(
+                text="Мой профиль",
+                icon_custom_emoji_id=btn_id("profile"),
+            ),
+        ],
+        [
+            KeyboardButton(
+                text="Премиум",
+                icon_custom_emoji_id=btn_id("money"),
+            ),
+            KeyboardButton(
+                text="О сервисе",
+                icon_custom_emoji_id=btn_id("info"),
+            ),
+        ],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, is_persistent=True)
 
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
@@ -199,7 +228,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         text=text,
         parse_mode=ParseMode.HTML,
-        reply_markup=main_menu_keyboard(),
+        reply_markup=main_reply_keyboard(),
     )
 
 
@@ -415,6 +444,96 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
     )
 
 
+async def handle_text_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка нажатий кнопок постоянного нижнего меню."""
+    if not update.message or not update.message.text:
+        return
+
+    text = update.message.text.strip().lower()
+    user = update.effective_user
+
+    if "скан" in text:
+        msg = (
+            f"{tag('file')} <b>Как сделать идеальный скан:</b>\n\n"
+            "1. Сфотографируйте блок <b>'Состав'</b> или <b>'Supplement Facts'</b>.\n"
+            "2. Держите камеру ровно при хорошем свете.\n"
+            "3. Убедитесь, что текст четкий и читаемый.\n"
+            f"4. Отправьте фото прямо в этот чат!\n\n"
+            f"{tag('pencil')} <i>Бот одинаково хорошо читает составы на русском и английском языках.</i>"
+        )
+        await update.message.reply_text(
+            text=msg,
+            parse_mode=ParseMode.HTML,
+        )
+
+    elif "профиль" in text:
+        scans_count = get_monthly_scan_count(user.id)
+        has_prem = is_premium(user.id)
+        status_str = f"{tag('money')} <b>Premium Безлимит</b>" if has_prem else f"<b>Бесплатный</b> ({scans_count}/{FREE_SCANS_PER_MONTH} использовано)"
+
+        msg = (
+            f"{tag('profile')} <b>Профиль пользователя</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Имя:</b> {user.first_name}\n"
+            f"<b>ID:</b> <code>{user.id}</code>\n"
+            f"<b>Статус:</b> {status_str}\n"
+            f"<b>Сканов в этом месяце:</b> <code>{scans_count}</code>\n"
+        )
+        rows = []
+        if not has_prem:
+            rows.append([
+                InlineKeyboardButton(
+                    text="Оформить Премиум",
+                    callback_data="premium",
+                    icon_custom_emoji_id=btn_id("money"),
+                )
+            ])
+        await update.message.reply_text(
+            text=msg,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None,
+        )
+
+    elif "премиум" in text:
+        msg = (
+            f"{tag('money')} <b>LabelSpy Premium</b>\n\n"
+            "Откройте все возможности:\n"
+            f"• {tag('check')} <b>Безлимитные сканы</b> 24/7\n"
+            f"• {tag('growth_chart')} <b>Приоритетная скорость</b> анализа\n"
+            f"• {tag('file')} <b>Сравнение составов</b> двух продуктов\n\n"
+            f"<b>Стоимость подписки:</b> <b>50 ⭐ Stars (~$0.99)</b>\n\n"
+            "<i>Нажмите кнопку ниже для оплаты или попробуйте демо:</i>"
+        )
+        await update.message.reply_text(
+            text=msg,
+            parse_mode=ParseMode.HTML,
+            reply_markup=premium_keyboard(),
+        )
+
+    elif "сервис" in text or "инфо" in text:
+        msg = (
+            f"{tag('info')} <b>О сервисе {BOT_NAME}</b>\n\n"
+            f"{tag('bot')} <b>LabelSpy</b> — независимый эксперт по составам продуктов и добавок.\n\n"
+            f"Многие производители маскируют вредные добавки и экономят на сырье.\n\n"
+            f"<b>{tag('check')} Что проверяет наш AI:</b>\n"
+            f"• Чистоту спортивных добавок (протеин, креатин, BCAA)\n"
+            f"• Наличие опасных красителей и консервантов\n"
+            f"• Скрытый сахар и подсластители\n"
+            f"• Качество и биодоступность витаминов\n\n"
+            f"<i>Выбирайте продукты осознанно!</i>"
+        )
+        await update.message.reply_text(
+            text=msg,
+            parse_mode=ParseMode.HTML,
+        )
+
+    else:
+        await update.message.reply_text(
+            f"<i>{tag('photo')} Пожалуйста, отправьте фото этикетки с составом прямо в чат!</i>",
+            parse_mode=ParseMode.HTML,
+        )
+
+
 def main():
     """Запуск бота."""
     print("Инициализация базы данных...")
@@ -431,6 +550,7 @@ def main():
     application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_menu))
 
     print(f"Бот @labelspy_bot успешно запущен!")
     application.run_polling()
