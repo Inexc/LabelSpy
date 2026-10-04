@@ -1,7 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="t-sb">
   <title id="t-sb">LabelSpy Symbol (Black)</title>
   <path fill="#111111" fill-rule="evenodd" d="
-    
     M 22 128
     C 62 45 194 45 234 128
     C 194 211 62 211 22 128
@@ -10,8 +9,6 @@
     C 84 71 172 71 206 128
     C 172 185 84 185 50 128
     Z
-
-    
     M 128 92
     A 36 36 0 1 1 127.9 92
     Z
@@ -21,6 +18,5 @@
     C 128 140.42, 115.58 128, 105 128
     C 115.58 128, 128 115.58, 128 105
     Z
-
   "/>
 </svg>

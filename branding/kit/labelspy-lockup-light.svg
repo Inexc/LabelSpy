@@ -1,32 +1,27 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 256" width="760" height="256" role="img" aria-labelledby="t-lh-l">
-  <title id="t-lh-l">LabelSpy Logo (Light)</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 256" width="760" height="256" role="img" aria-labelledby="t-ll">
+  <title id="t-ll">LabelSpy Lockup (Light)</title>
   <rect width="760" height="256" rx="32" fill="#FFFFFF"/>
-  <!-- Symbol -->
+  <rect width="760" height="256" rx="32" fill="none" stroke="rgba(0, 0, 0, 0.08)" stroke-width="2"/>
   <g transform="translate(32, 0)">
     <path fill="#111111" fill-rule="evenodd" d="
-      
-    M 22 128
-    C 62 45 194 45 234 128
-    C 194 211 62 211 22 128
-    Z
-    M 50 128
-    C 84 71 172 71 206 128
-    C 172 185 84 185 50 128
-    Z
-
-      
-    M 128 92
-    A 36 36 0 1 1 127.9 92
-    Z
-    M 128 105
-    C 128 115.58, 140.42 128, 151 128
-    C 140.42 128, 128 140.42, 128 151
-    C 128 140.42, 115.58 128, 105 128
-    C 115.58 128, 128 115.58, 128 105
-    Z
-
+      M 22 128
+      C 62 45 194 45 234 128
+      C 194 211 62 211 22 128
+      Z
+      M 50 128
+      C 84 71 172 71 206 128
+      C 172 185 84 185 50 128
+      Z
+      M 128 92
+      A 36 36 0 1 1 127.9 92
+      Z
+      M 128 105
+      C 128 115.58, 140.42 128, 151 128
+      C 140.42 128, 128 140.42, 128 151
+      C 128 140.42, 115.58 128, 105 128
+      C 115.58 128, 128 115.58, 128 105
+      Z
     "/>
   </g>
-  <!-- Wordmark -->
-  <text x="300" y="148" font-family="system-ui, -apple-system, 'SF Pro Display', 'Inter', 'Segoe UI', sans-serif" font-size="54" font-weight="800" letter-spacing="4px" fill="#111111">LABEL<tspan fill="#059669">SPY</tspan></text>
+  <text x="300" y="148" font-family="system-ui, -apple-system, 'SF Pro Display', 'Inter', 'Segoe UI', sans-serif" font-size="54" font-weight="800" letter-spacing="4px" fill="#111111">LABELSPY</text>
 </svg>
