@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="t-app">
+  <title id="t-app">LabelSpy App Icon</title>
+  <defs>
+    <!-- Плавный радиальный градиент глубокой ночи -->
+    <radialGradient id="bg" cx="50%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#141E2E"/>
+      <stop offset="100%" stop-color="#070A0F"/>
+    </radialGradient>
+    <!-- Фирменный неоновый изумрудный градиент -->
+    <linearGradient id="emerald" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34D399"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+  </defs>
+  <!-- Squircle container (Apple standard rx=56 на 256 canvas) -->
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <rect width="256" height="256" rx="56" fill="none" stroke="rgba(52, 211, 153, 0.15)" stroke-width="2"/>
+  
+  <!-- Фирменный знак по центру (масштаб 72%) -->
+  <g transform="translate(35.8, 35.8) scale(0.72)">
+    <!-- Изумрудный контур глаза и радужка -->
+    <path fill="url(#emerald)" fill-rule="evenodd" d="
+      M 22 128
+      C 62 45 194 45 234 128
+      C 194 211 62 211 22 128
+      Z
+      M 50 128
+      C 84 71 172 71 206 128
+      C 172 185 84 185 50 128
+      Z
+      M 128 92
+      A 36 36 0 1 1 127.9 92
+      Z
+    "/>
+    <!-- Белоснежная сияющая AI-искра в центре зрачка -->
+    <path fill="#FFFFFF" d="
+      M 128 105
+      C 128 115.58, 140.42 128, 151 128
+      C 140.42 128, 128 140.42, 128 151
+      C 128 140.42, 115.58 128, 105 128
+      C 115.58 128, 128 115.58, 128 105
+      Z
+    "/>
+  </g>
+</svg>
