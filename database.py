@@ -6,8 +6,8 @@ DB_PATH = "labelspy.db"
 
 
 def get_connection():
-    """Создаёт подключение к базе данных."""
-    conn = sqlite3.connect(DB_PATH)
+    """Создаёт подключение к базе данных с увеличенным таймаутом."""
+    conn = sqlite3.connect(DB_PATH, timeout=20.0)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -15,6 +15,7 @@ def get_connection():
 def init_db():
     """Создаёт таблицы если их ещё нет."""
     conn = get_connection()
+    conn.execute("PRAGMA journal_mode = WAL;")
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -55,12 +56,12 @@ def add_user(user_id: int, username: str, first_name: str):
 
 
 def get_monthly_scan_count(user_id: int) -> int:
-    """Считает сколько сканов сделал пользователь в этом месяце."""
+    """Считает сколько сканов сделал пользователь в текущем календарном месяце."""
     conn = get_connection()
     cursor = conn.cursor()
 
     now = datetime.now()
-    month_start = now.replace(day=1, hour=0, minute=0, second=0).isoformat()
+    month_start = now.strftime("%Y-%m-01 00:00:00")
 
     cursor.execute(
         "SELECT COUNT(*) as cnt FROM scans WHERE user_id = ? AND scanned_at >= ?",
@@ -68,16 +69,16 @@ def get_monthly_scan_count(user_id: int) -> int:
     )
     result = cursor.fetchone()
     conn.close()
-    return result["cnt"]
+    return result["cnt"] if result else 0
 
 
 def add_scan(user_id: int, product_name: str = None, rating: str = None):
-    """Записывает новый скан."""
+    """Записывает новый успешный скан в базу."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO scans (user_id, product_name, rating) VALUES (?, ?, ?)",
-        (user_id, product_name, rating)
+        (user_id, product_name or "Нераспознано", str(rating) if rating is not None else None)
     )
     conn.commit()
     conn.close()

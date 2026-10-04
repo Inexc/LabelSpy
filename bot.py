@@ -3,6 +3,7 @@ Telegram бот LabelSpy — AI-сканер состава продуктов �
 Кнопки с яркими визуальными эмодзи, работающими на всех устройствах.
 """
 
+import html
 import logging
 import os
 import sys
@@ -36,6 +37,8 @@ from database import (
     is_premium,
     set_premium,
     get_user_info,
+    get_total_users,
+    get_total_scans,
 )
 from emoji_helper import tag, btn_id
 from analyzer import analyze_label, format_analysis_html
@@ -207,7 +210,8 @@ def get_start_text(user) -> str:
     """Формирует приветственный текст с оформлением."""
     scans_used = get_monthly_scan_count(user.id)
     user_has_prem = is_premium(user.id)
-    limit_text = "Безлимитно" if user_has_prem else f"{FREE_SCANS_PER_MONTH - scans_used} из {FREE_SCANS_PER_MONTH}"
+    remaining_scans = max(0, FREE_SCANS_PER_MONTH - scans_used)
+    limit_text = "Безлимитно" if user_has_prem else f"{remaining_scans} из {FREE_SCANS_PER_MONTH}"
 
     return (
         f"{tag('bot')} <b>LABELSPY · AI СКАНИРОВАНИЕ СОСТАВА</b>\n\n"
@@ -215,8 +219,8 @@ def get_start_text(user) -> str:
         f"• {tag('file')} <b>Спортпит и витамины:</b> проверка реальных дозировок и качества сырья\n"
         f"• {tag('cross')} <b>Контроль рисков:</b> выявление скрытого сахара, трансжиров и вредных добавок\n"
         f"• {tag('stats')} <b>Экспертный вердикт:</b> честная оценка от 1 до 10\n\n"
-        f"🪙 <b>Ваш лимит сканов:</b> <code>{limit_text}</code>\n\n"
-        f"<i>📷 Отправьте фото этикетки с составом прямо в чат!</i>"
+        f"{tag('money')} <b>Ваш лимит сканов:</b> <code>{limit_text}</code>\n\n"
+        f"<i>{tag('photo')} Отправьте фото этикетки с составом прямо в чат!</i>"
     )
 
 
@@ -266,9 +270,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         analysis = await analyze_label(bytes(photo_bytes))
         
-        product_name = analysis.get("product_name") if "error" not in analysis else "Нераспознано"
-        score = analysis.get("score") if "error" not in analysis else None
-        add_scan(user.id, product_name, score)
+        # Списываем попытку только при успешном распознавании этикетки
+        if "error" not in analysis:
+            product_name = analysis.get("product_name") or "Нераспознано"
+            score = analysis.get("score")
+            add_scan(user.id, product_name, str(score) if score is not None else None)
 
         reply_html = format_analysis_html(analysis)
 
@@ -295,6 +301,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     
     user = query.from_user
+    add_user(user.id, user.username or "", user.first_name or "")
     data = query.data
 
     if data == "back_to_main":
@@ -450,12 +457,13 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
 
 
 async def handle_text_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка нажатий кнопок постоянного нижнего меню."""
+    """Обработка нажатий кнопок постоянного нижнего меню и текстовых запросов."""
     if not update.message or not update.message.text:
         return
 
     text = update.message.text.strip().lower()
     user = update.effective_user
+    add_user(user.id, user.username or "", user.first_name or "")
 
     if "скан" in text:
         msg = (
@@ -479,7 +487,7 @@ async def handle_text_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             f"{tag('profile')} <b>Профиль пользователя</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>Имя:</b> {user.first_name}\n"
+            f"<b>Имя:</b> {html.escape(user.first_name or 'Пользователь')}\n"
             f"<b>ID:</b> <code>{user.id}</code>\n"
             f"<b>Статус:</b> {status_str}\n"
             f"<b>Сканов в этом месяце:</b> <code>{scans_count}</code>\n"
@@ -533,11 +541,64 @@ async def handle_text_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
         )
 
+    elif any(greeting in text for greeting in ["привет", "здравствуй", "хай", "hello", "hi", "салют"]):
+        greeting_text = (
+            f"👋 <b>Привет, {html.escape(user.first_name or 'друг')}!</b>\n\n"
+            f"Я бот <b>{BOT_NAME}</b> — проверяю составы продуктов питания, витаминов и добавок.\n\n"
+            f"📷 <b>Как проверить:</b> сфотографируйте этикетку с составом и отправьте фото сюда!\n\n"
+            f"Также вы можете пользоваться кнопками меню внизу экрана."
+        )
+        await update.message.reply_text(text=greeting_text, parse_mode=ParseMode.HTML)
+
+    elif any(q in text for q in ["помощь", "help", "как пользоваться", "инструкция"]):
+        help_text = (
+            f"{tag('file')} <b>Инструкция по использованию:</b>\n\n"
+            "1. Сфотографируйте блок <b>'Состав'</b> или <b>'Ingredients'</b> на упаковке.\n"
+            "2. Отправьте фото в этот чат.\n"
+            "3. AI за несколько секунд выдаст детальный вердикт и оценку безопасности."
+        )
+        await update.message.reply_text(text=help_text, parse_mode=ParseMode.HTML)
+
     else:
         await update.message.reply_text(
-            f"<i>{tag('photo')} Пожалуйста, отправьте фото этикетки с составом прямо в чат!</i>",
+            f"<i>{tag('photo')} Отправьте фото этикетки с составом прямо в чат или воспользуйтесь кнопками меню внизу!</i>",
             parse_mode=ParseMode.HTML,
         )
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /help."""
+    user = update.effective_user
+    add_user(user.id, user.username or "", user.first_name or "")
+    text = (
+        f"{tag('file')} <b>Как пользоваться {BOT_NAME}:</b>\n\n"
+        "1. Сфотографируйте блок <b>'Состав'</b> или <b>'Supplement Facts'</b> на упаковке.\n"
+        "2. Отправьте фото прямо в чат.\n"
+        "3. AI мгновенно оценит чистоту состава, выявит скрытый сахар и сомнительные добавки.\n\n"
+        f"• {tag('profile')} <b>Профиль</b> — проверка лимита бесплатных сканов\n"
+        f"• {tag('money')} <b>Премиум</b> — безлимитный анализ 24/7\n\n"
+        f"<i>{tag('photo')} Отправьте фото этикетки для анализа!</i>"
+    )
+    await update.message.reply_text(
+        text=text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_reply_keyboard(),
+    )
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Статистика бота для администратора."""
+    user = update.effective_user
+    if user.id != ADMIN_ID:
+        return
+    total_users = get_total_users()
+    total_scans = get_total_scans()
+    text = (
+        f"📊 <b>Статистика {BOT_NAME}:</b>\n\n"
+        f"👥 Пользователей в базе: <code>{total_users}</code>\n"
+        f"📷 Всего сканирований: <code>{total_scans}</code>\n"
+    )
+    await update.message.reply_text(text=text, parse_mode=ParseMode.HTML)
 
 
 def main():
@@ -552,6 +613,8 @@ def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
     application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))

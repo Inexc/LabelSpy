@@ -7,20 +7,25 @@ import html
 import io
 import json
 import os
+import re
+import logging
 from PIL import Image
 import google.generativeai as genai
 from dotenv import load_dotenv
 
 from emoji_helper import tag
 
+logger = logging.getLogger(__name__)
+
 load_dotenv()
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-# Приоритетный список моделей с поддержкой Vision
+# Приоритетный список рабочих моделей с поддержкой Vision
 CANDIDATE_MODELS = [
-    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
     "gemini-3.5-flash",
-    "gemini-flash-latest",
+    "gemini-3.8-flash",
 ]
 
 SYSTEM_PROMPT = """
@@ -55,7 +60,7 @@ SYSTEM_PROMPT = """
 async def analyze_label(image_bytes: bytes) -> dict:
     """
     Анализирует изображение этикетки через Gemini Vision.
-    Использует автоматический повтор и резервные модели при лимитах.
+    Использует автоматический переход на резервные модели при исчерпании квот.
     """
     import asyncio
 
@@ -63,46 +68,38 @@ async def analyze_label(image_bytes: bytes) -> dict:
     last_error = None
 
     for model_name in CANDIDATE_MODELS:
-        for attempt in range(2):
-            try:
-                model = genai.GenerativeModel(
-                    model_name=model_name,
-                    system_instruction=SYSTEM_PROMPT,
-                    generation_config={"response_mime_type": "application/json"}
-                )
-                
-                # Запускаем в отдельном потоке, так как generate_content синхронный
-                response = await asyncio.to_thread(
-                    model.generate_content,
-                    [
-                        "Внимательно изучи эту этикетку и разбери полный состав, дозировки, добавки и безопасность:",
-                        image
-                    ]
-                )
-                
-                raw_text = response.text.strip()
-                # Очищаем от возможных обёрток ```json ... ```
-                if raw_text.startswith("```json"):
-                    raw_text = raw_text[7:]
-                if raw_text.startswith("```"):
-                    raw_text = raw_text[3:]
-                if raw_text.endswith("```"):
-                    raw_text = raw_text[:-3]
-                raw_text = raw_text.strip()
-
+        try:
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                system_instruction=SYSTEM_PROMPT,
+                generation_config={"response_mime_type": "application/json"}
+            )
+            
+            # Запускаем в отдельном потоке, так как generate_content синхронный
+            response = await asyncio.to_thread(
+                model.generate_content,
+                [
+                    "Внимательно изучи эту этикетку и разбери полный состав, дозировки, добавки и безопасность:",
+                    image
+                ]
+            )
+            
+            raw_text = response.text.strip()
+            # Извлекаем JSON объект надёжно через регулярное выражение
+            match = re.search(r'\{[\s\S]*\}', raw_text)
+            if match:
+                data = json.loads(match.group(0))
+            else:
                 data = json.loads(raw_text)
-                return data
-            except Exception as e:
-                last_error = e
-                err_str = str(e)
-                if "429" in err_str or "Quota exceeded" in err_str:
-                    # Кратковременный лимит запросов в минуту — ждём и повторяем
-                    await asyncio.sleep(4)
-                    continue
-                else:
-                    break
 
-    return {"error": f"Сервис перегружен, пожалуйста, повторите попытку через 10 секунд ({str(last_error)})"}
+            return data
+        except Exception as e:
+            last_error = e
+            err_str = str(e)
+            logger.warning(f"Модель {model_name} вернула ошибку: {err_str[:120]}. Пробуем следующую модель...")
+            continue
+
+    return {"error": f"Сервис временно перегружен, пожалуйста, повторите попытку через пару секунд ({str(last_error)})"}
 
 
 
