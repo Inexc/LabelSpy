@@ -116,7 +116,7 @@ def premium_keyboard() -> InlineKeyboardMarkup:
     """Кнопки раздела Премиум."""
     rows = [
         [
-            InlineKeyboardButton(text="⭐ Оплатить 250 Stars (~$4.99)", callback_data="buy_premium_stars")
+            InlineKeyboardButton(text="⭐ Оплатить 50 Stars (~$0.99)", callback_data="buy_premium_stars")
         ],
         [
             InlineKeyboardButton(text="🎁 Тестовый доступ (демо)", callback_data="activate_test_premium")
@@ -298,8 +298,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             "• ✅ <b>Безлимитные сканы</b> 24/7\n"
             "• 📊 <b>Приоритетная скорость</b> анализа\n"
             "• 📁 <b>Сравнение составов</b> двух продуктов\n\n"
-            "<b>Стоимость подписки:</b> <b>$4.99/мес</b>\n\n"
-            "<i>Нажмите кнопку ниже, чтобы включить демо-премиум:</i>"
+            "<b>Стоимость подписки:</b> <b>50 ⭐ Stars (~$0.99)</b>\n\n"
+            "<i>Нажмите кнопку ниже для оплаты или попробуйте демо:</i>"
         )
         await query.message.edit_text(
             text=text,
@@ -312,7 +312,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         description = "Безлимитный AI-анализ составов продуктов, добавок и спортивного питания 24/7."
         payload = f"premium_1m_{user.id}"
         currency = "XTR"
-        prices = [LabeledPrice("Подписка на 30 дней", 250)]
+        prices = [LabeledPrice("Подписка на 30 дней", 50)]
 
         await context.bot.send_invoice(
             chat_id=query.message.chat_id,
