@@ -1,5 +1,6 @@
 python-telegram-bot==22.7
 google-generativeai==0.8.6
 python-dotenv==1.2.4
-Pillow
-httpx
+Pillow==12.1.1
+httpx==0.28.1
+

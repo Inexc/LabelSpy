@@ -1,6 +1,8 @@
 """
 Telegram бот LabelSpy — AI-сканер состава продуктов и спортивного питания
 Кнопки с яркими визуальными эмодзи, работающими на всех устройствах.
+Включает строгую проверку платежей, ограничение срока подписки, защиту от параллельного спама
+и поддержку фото как в виде сжатых изображений, так и файлов/документов.
 """
 
 import html
@@ -8,6 +10,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import (
     Update,
@@ -28,7 +31,16 @@ from telegram.ext import (
     filters,
 )
 
-from config import TELEGRAM_TOKEN, FREE_SCANS_PER_MONTH, BOT_NAME, ADMIN_ID
+from config import (
+    TELEGRAM_TOKEN,
+    FREE_SCANS_PER_MONTH,
+    BOT_NAME,
+    ADMIN_ID,
+    PREMIUM_STARS_PRICE,
+    PREMIUM_SUBSCRIPTION_DAYS,
+    DEMO_PREMIUM_DAYS,
+    SCAN_COOLDOWN_SECONDS,
+)
 from database import (
     init_db,
     add_user,
@@ -36,6 +48,9 @@ from database import (
     add_scan,
     is_premium,
     set_premium,
+    grant_premium,
+    get_premium_until,
+    record_successful_payment,
     get_user_info,
     get_total_users,
     get_total_scans,
@@ -48,6 +63,11 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+# Защита от параллельного спама и обхода лимитов
+active_user_scans: set[int] = set()
+last_user_scan_time: dict[int, float] = {}
+
 
 class HealthHandler(BaseHTTPRequestHandler):
     """Эндпоинт для облачных хостингов (Render, Koyeb и др.)."""
@@ -181,7 +201,7 @@ def premium_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(
-                text="Оплатить 50 Stars (~$0.99)",
+                text=f"Оплатить {PREMIUM_STARS_PRICE} Stars (~$0.99)",
                 callback_data="buy_premium_stars",
                 icon_custom_emoji_id=btn_id("money"),
             )
@@ -190,7 +210,7 @@ def premium_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
     if user_id == ADMIN_ID:
         rows.append([
             InlineKeyboardButton(
-                text="Тестовый доступ (демо)",
+                text=f"Тестовый доступ ({DEMO_PREMIUM_DAYS} дн.)",
                 callback_data="activate_test_premium",
                 icon_custom_emoji_id=btn_id("gift"),
             )
@@ -203,7 +223,6 @@ def premium_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
         )
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
 
 
 def get_start_text(user) -> str:
@@ -238,18 +257,41 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка фото этикетки."""
+    """
+    Обработка фото этикетки (как сжатого фото, так и файла/документа).
+    Защищена от параллельного обхода лимитов и флуда.
+    """
     user = update.effective_user
     add_user(user.id, user.username or "", user.first_name or "")
-    
+
+    now_ts = time.time()
+    last_ts = last_user_scan_time.get(user.id, 0.0)
+
+    # 1. Защита от частого спама (cooldown)
+    if now_ts - last_ts < SCAN_COOLDOWN_SECONDS:
+        await update.message.reply_text(
+            "⏳ <b>Слишком частые запросы.</b> Пожалуйста, подождите пару секунд перед следующим сканированием.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    # 2. Защита от параллельных запросов для обхода лимита
+    if user.id in active_user_scans:
+        await update.message.reply_text(
+            "⏳ <b>Ваш предыдущий скан ещё обрабатывается.</b> Пожалуйста, дождитесь завершения перед отправкой следующего фото.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    # 3. Проверка месячного лимита
     user_has_prem = is_premium(user.id)
     scans_used = get_monthly_scan_count(user.id)
-    
+
     if not user_has_prem and scans_used >= FREE_SCANS_PER_MONTH:
         limit_msg = (
             f"❌ <b>Лимит бесплатных сканов исчерпан!</b>\n\n"
-            f"Вы использовали все {FREE_SCANS_PER_MONTH} бесплатных сканов в этом месяце.\n\n"
-            f"💎 Оформите <b>LabelSpy Premium</b> для безлимитного анализа!"
+            f"Вы использовали все {FREE_SCANS_PER_MONTH} бесплатных сканов в текущем месяце.\n\n"
+            f"💎 Оформите <b>LabelSpy Premium</b> для безлимитного анализа без ограничений!"
         )
         await update.message.reply_text(
             text=limit_msg,
@@ -258,26 +300,44 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    status_msg = await update.message.reply_text(
-        "🔄 <b>Изучаю этикетку...</b>\n<i>AI читает состав и сверяет компоненты. Это займет несколько секунд.</i>",
-        parse_mode=ParseMode.HTML,
-    )
-
+    active_user_scans.add(user.id)
     try:
-        photo_file = await update.message.photo[-1].get_file()
-        photo_bytes = await photo_file.download_as_bytearray()
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+        status_msg = await update.message.reply_text(
+            "🔄 <b>Изучаю этикетку...</b>\n<i>AI читает состав и сверяет компоненты. Это займет несколько секунд.</i>",
+            parse_mode=ParseMode.HTML,
+        )
 
+        # Поддерживаем и обычные фото, и документы-изображения (отправка «без сжатия»)
+        if update.message.photo:
+            photo_file = await update.message.photo[-1].get_file()
+        elif update.message.document:
+            doc = update.message.document
+            mime = (doc.mime_type or "").lower()
+            if not mime.startswith("image/"):
+                await status_msg.edit_text(
+                    "❌ <b>Пожалуйста, отправьте изображение этикетки</b> (JPG, PNG или WEBP).",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+            photo_file = await doc.get_file()
+        else:
+            await status_msg.edit_text(
+                "❌ <b>Не удалось найти изображение в сообщении.</b>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        photo_bytes = await photo_file.download_as_bytearray()
         analysis = await analyze_label(bytes(photo_bytes))
-        
+
         # Списываем попытку только при успешном распознавании этикетки
         if "error" not in analysis:
             product_name = analysis.get("product_name") or "Нераспознано"
             score = analysis.get("score")
-            add_scan(user.id, product_name, str(score) if score is not None else None)
+            add_scan(user.id, product_name, str(score) if score is not None else None, status="success")
 
         reply_html = format_analysis_html(analysis)
-
         await status_msg.edit_text(
             text=reply_html,
             parse_mode=ParseMode.HTML,
@@ -293,16 +353,24 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception:
             pass
+    finally:
+        active_user_scans.discard(user.id)
+        last_user_scan_time[user.id] = time.time()
 
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка нажатий инлайн-кнопок."""
     query = update.callback_query
-    await query.answer()
-    
     user = query.from_user
     add_user(user.id, user.username or "", user.first_name or "")
     data = query.data
+
+    # Защита от повторного query.answer(): обработка алерта для не-админа
+    if data == "activate_test_premium" and user.id != ADMIN_ID:
+        await query.answer("Эта опция доступна только администратору.", show_alert=True)
+        return
+
+    await query.answer()
 
     if data == "back_to_main":
         text = get_start_text(user)
@@ -330,17 +398,22 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     elif data == "profile":
         scans_count = get_monthly_scan_count(user.id)
         has_prem = is_premium(user.id)
-        status_str = "💎 <b>Premium Безлимит</b>" if has_prem else f"<b>Бесплатный</b> ({scans_count}/{FREE_SCANS_PER_MONTH} использовано)"
+        prem_until = get_premium_until(user.id)
+
+        if has_prem:
+            status_str = f"💎 <b>Premium Безлимит</b>\n<b>Действует до:</b> <code>{prem_until} (UTC)</code>"
+        else:
+            status_str = f"<b>Бесплатный</b> ({scans_count}/{FREE_SCANS_PER_MONTH} использовано)"
 
         text = (
             "👤 <b>Профиль пользователя</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>Имя:</b> {user.first_name}\n"
+            f"<b>Имя:</b> {html.escape(user.first_name or 'Пользователь')}\n"
             f"<b>ID:</b> <code>{user.id}</code>\n"
             f"<b>Статус:</b> {status_str}\n"
             f"<b>Сканов в этом месяце:</b> <code>{scans_count}</code>\n"
         )
-        
+
         rows = []
         if not has_prem:
             rows.append([
@@ -383,14 +456,14 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
     elif data == "premium":
-        demo_hint = " или попробуйте демо" if user.id == ADMIN_ID else ""
+        demo_hint = f" (или демо на {DEMO_PREMIUM_DAYS} дн.)" if user.id == ADMIN_ID else ""
         text = (
             f"{tag('money')} <b>LabelSpy Premium</b>\n\n"
-            "Откройте все возможности:\n"
-            f"• {tag('check')} <b>Безлимитные сканы</b> 24/7\n"
-            f"• {tag('growth_chart')} <b>Приоритетная скорость</b> анализа\n"
-            f"• {tag('file')} <b>Сравнение составов</b> двух продуктов\n\n"
-            f"<b>Стоимость подписки:</b> <b>50 ⭐ Stars (~$0.99)</b>\n\n"
+            "Премиум-возможности подписки:\n"
+            f"• {tag('check')} <b>Безлимитный AI-анализ</b> 24/7 (без месячных лимитов)\n"
+            f"• {tag('stats')} <b>Детальный разбор добавок</b>, Е-кодов и скрытого сахара\n"
+            f"• {tag('file')} <b>Подробные рекомендации</b> по чистоте состава\n\n"
+            f"<b>Стоимость подписки:</b> <b>{PREMIUM_STARS_PRICE} ⭐ Stars (~$0.99) на {PREMIUM_SUBSCRIPTION_DAYS} дней</b>\n\n"
             f"<i>Нажмите кнопку ниже для оплаты{demo_hint}:</i>"
         )
         await query.message.edit_text(
@@ -400,11 +473,11 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
     elif data == "buy_premium_stars":
-        title = "LabelSpy Premium (1 месяц)"
+        title = f"LabelSpy Premium ({PREMIUM_SUBSCRIPTION_DAYS} дней)"
         description = "Безлимитный AI-анализ составов продуктов, добавок и спортивного питания 24/7."
         payload = f"premium_1m_{user.id}"
         currency = "XTR"
-        prices = [LabeledPrice("Подписка на 30 дней", 50)]
+        prices = [LabeledPrice(f"Подписка на {PREMIUM_SUBSCRIPTION_DAYS} дней", PREMIUM_STARS_PRICE)]
 
         await context.bot.send_invoice(
             chat_id=query.message.chat_id,
@@ -418,38 +491,82 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif data == "activate_test_premium":
         if user.id != ADMIN_ID:
-            await query.answer("Эта опция доступна только администратору.", show_alert=True)
             return
-        set_premium(user.id, True)
+        new_until = grant_premium(user.id, duration_days=DEMO_PREMIUM_DAYS)
         await query.message.edit_text(
-            "🎉 <b>Поздравляем! Демо-Премиум активирован!</b>\n\n"
-            "Теперь у вас безлимитные сканы без ограничений ✅.\n"
-            "Отправьте любое фото этикетки!",
+            f"🎉 <b>Поздравляем! Демо-Премиум активирован на {DEMO_PREMIUM_DAYS} дней!</b>\n\n"
+            f"📅 <b>Подписка активна до:</b> <code>{new_until} (UTC)</code>.\n"
+            f"Теперь у вас безлимитные сканы без ограничений ✅.\n"
+            f"Отправьте любое фото этикетки!",
             parse_mode=ParseMode.HTML,
             reply_markup=back_keyboard(),
         )
 
 
 async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Подтверждение готовности принять оплату в Stars."""
+    """Подтверждение готовности принять оплату в Stars со строгой проверкой параметров."""
     query = update.pre_checkout_query
+    user = query.from_user
+    expected_payload = f"premium_1m_{user.id}"
+
+    # Строгая проверка параметров заказа
+    if query.currency != "XTR":
+        logger.warning(f"Отказ pre-checkout: неверная валюта '{query.currency}' от пользователя {user.id}")
+        await query.answer(ok=False, error_message="Неверная валюта заказа. Оплата принимается в Telegram Stars.")
+        return
+
+    if query.total_amount != PREMIUM_STARS_PRICE:
+        logger.warning(f"Отказ pre-checkout: неверная сумма {query.total_amount} от пользователя {user.id}")
+        await query.answer(ok=False, error_message=f"Неверная сумма заказа. Ожидалось {PREMIUM_STARS_PRICE} Stars.")
+        return
+
+    if query.invoice_payload != expected_payload:
+        logger.warning(f"Отказ pre-checkout: неверный payload '{query.invoice_payload}' от пользователя {user.id}")
+        await query.answer(ok=False, error_message="Заказ устарел или не соответствует вашему аккаунту. Попробуйте снова.")
+        return
+
     await query.answer(ok=True)
 
 
 async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка успешной оплаты через Telegram Stars."""
+    """Обработка успешной оплаты через Telegram Stars с идемпотентностью и проверкой."""
     user = update.effective_user
     payment = update.message.successful_payment
+    expected_payload = f"premium_1m_{user.id}"
 
-    # Активируем статус в базе данных
-    set_premium(user.id, True)
+    if payment.currency != "XTR" or payment.total_amount != PREMIUM_STARS_PRICE or payment.invoice_payload != expected_payload:
+        logger.error(f"Несоответствие данных успешного платежа для пользователя {user.id}: {payment}")
+        await update.message.reply_text(
+            "⚠️ <b>Данные платежа не прошли проверку.</b> Пожалуйста, обратитесь к администратору для ручной активации.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
 
-    text = (
-        f"🎉 <b>Оплата прошла успешно!</b>\n\n"
-        f"Вам начислен <b>LabelSpy Premium</b> на 1 месяц.\n"
-        f"Сумма: <code>{payment.total_amount} ⭐ Telegram Stars</code>.\n\n"
-        f"Теперь у вас полный безлимит на сканирование этикеток 24/7! 📷"
+    charge_id = payment.telegram_payment_charge_id
+    is_new, new_until = record_successful_payment(
+        charge_id=charge_id,
+        user_id=user.id,
+        amount=payment.total_amount,
+        currency=payment.currency,
+        payload=payment.invoice_payload,
+        duration_days=PREMIUM_SUBSCRIPTION_DAYS,
     )
+
+    if is_new:
+        text = (
+            f"🎉 <b>Оплата прошла успешно!</b>\n\n"
+            f"Вам начислен <b>LabelSpy Premium</b> на {PREMIUM_SUBSCRIPTION_DAYS} дней.\n"
+            f"Сумма: <code>{payment.total_amount} ⭐ Telegram Stars</code>.\n"
+            f"📅 <b>Подписка активна до:</b> <code>{new_until} (UTC)</code>\n\n"
+            f"Теперь у вас полный безлимит на сканирование этикеток 24/7! 📷"
+        )
+    else:
+        text = (
+            f"ℹ️ <b>Этот платёж уже был учтён ранее.</b>\n\n"
+            f"Ваш <b>LabelSpy Premium</b> активен до: <code>{new_until} (UTC)</code>.\n"
+            f"Повторное продление не производилось."
+        )
+
     await update.message.reply_text(
         text=text,
         parse_mode=ParseMode.HTML,
@@ -482,7 +599,12 @@ async def handle_text_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif "профиль" in text:
         scans_count = get_monthly_scan_count(user.id)
         has_prem = is_premium(user.id)
-        status_str = f"{tag('money')} <b>Premium Безлимит</b>" if has_prem else f"<b>Бесплатный</b> ({scans_count}/{FREE_SCANS_PER_MONTH} использовано)"
+        prem_until = get_premium_until(user.id)
+
+        if has_prem:
+            status_str = f"{tag('money')} <b>Premium Безлимит</b>\n<b>Действует до:</b> <code>{prem_until} (UTC)</code>"
+        else:
+            status_str = f"<b>Бесплатный</b> ({scans_count}/{FREE_SCANS_PER_MONTH} использовано)"
 
         msg = (
             f"{tag('profile')} <b>Профиль пользователя</b>\n"
@@ -508,14 +630,14 @@ async def handle_text_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif "премиум" in text:
-        demo_hint = " или попробуйте демо" if user.id == ADMIN_ID else ""
+        demo_hint = f" (или демо на {DEMO_PREMIUM_DAYS} дн.)" if user.id == ADMIN_ID else ""
         msg = (
             f"{tag('money')} <b>LabelSpy Premium</b>\n\n"
-            "Откройте все возможности:\n"
-            f"• {tag('check')} <b>Безлимитные сканы</b> 24/7\n"
-            f"• {tag('growth_chart')} <b>Приоритетная скорость</b> анализа\n"
-            f"• {tag('file')} <b>Сравнение составов</b> двух продуктов\n\n"
-            f"<b>Стоимость подписки:</b> <b>50 ⭐ Stars (~$0.99)</b>\n\n"
+            "Премиум-возможности подписки:\n"
+            f"• {tag('check')} <b>Безлимитный AI-анализ</b> 24/7 (без месячных лимитов)\n"
+            f"• {tag('stats')} <b>Детальный разбор добавок</b>, Е-кодов и скрытого сахара\n"
+            f"• {tag('file')} <b>Подробные рекомендации</b> по чистоте состава\n\n"
+            f"<b>Стоимость подписки:</b> <b>{PREMIUM_STARS_PRICE} ⭐ Stars (~$0.99) на {PREMIUM_SUBSCRIPTION_DAYS} дней</b>\n\n"
             f"<i>Нажмите кнопку ниже для оплаты{demo_hint}:</i>"
         )
         await update.message.reply_text(
@@ -618,12 +740,12 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_callback_query))
     application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    # Поддерживаем и обычные фото, и документы-изображения (отправка «без сжатия»)
+    application.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_photo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_menu))
 
     print(f"Бот @labelspy_bot успешно запущен!")
     application.run_polling()
-
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 .env
 __pycache__/
 *.pyc
+*.pyo
 labelspy.db
-test*
+test_output.json
+test_card.png

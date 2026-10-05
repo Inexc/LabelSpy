@@ -18,3 +18,11 @@ BOT_NAME = "LabelSpy"
 # ID администратора бота
 ADMIN_ID = int(os.getenv("ADMIN_ID", "871764715"))
 
+# Параметры подписки
+PREMIUM_STARS_PRICE = 50
+PREMIUM_SUBSCRIPTION_DAYS = 30
+DEMO_PREMIUM_DAYS = 7
+
+# Защита от спама (секунды между сканами)
+SCAN_COOLDOWN_SECONDS = 3
+
