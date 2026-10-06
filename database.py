@@ -16,12 +16,68 @@ logger = logging.getLogger(__name__)
 
 try:
     import psycopg2
+    from psycopg2 import pool
     from psycopg2.extras import RealDictCursor
     HAS_PSYCOPG2 = True
 except ImportError:
     HAS_PSYCOPG2 = False
 
 DB_PATH = "labelspy.db"
+_pg_pool = None
+
+
+def _get_pg_pool():
+    global _pg_pool
+    if _pg_pool is None and HAS_PSYCOPG2:
+        url = get_database_url()
+        if url:
+            try:
+                _pg_pool = pool.ThreadedConnectionPool(minconn=1, maxconn=10, dsn=url)
+                logger.info("[DB] ThreadedConnectionPool успешно инициализирован.")
+            except Exception as e:
+                logger.error(f"[DB] Ошибка создания ThreadedConnectionPool: {e}")
+                _pg_pool = None
+    return _pg_pool
+
+
+class PooledConnectionWrapper:
+    """
+    Обёртка соединения из пула.
+    При вызове conn.close() возвращает соединение обратно в пул,
+    не разрывая TCP/TLS-сессию, что кардинально ускоряет отклик бота.
+    """
+    def __init__(self, raw_conn, pool_inst):
+        self._raw_conn = raw_conn
+        self._pool = pool_inst
+        self._closed = False
+
+    def close(self):
+        if not self._closed:
+            self._closed = True
+            if self._pool and not self._raw_conn.closed:
+                try:
+                    self._raw_conn.rollback()
+                    self._pool.putconn(self._raw_conn)
+                except Exception as e:
+                    logger.warning(f"[DB] Ошибка возврата соединения в пул: {e}")
+                    try:
+                        self._pool.putconn(self._raw_conn, close=True)
+                    except Exception:
+                        pass
+            elif not self._raw_conn.closed:
+                try:
+                    self._raw_conn.close()
+                except Exception:
+                    pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def __getattr__(self, name):
+        return getattr(self._raw_conn, name)
 
 
 def get_utc_now() -> datetime:
@@ -60,6 +116,20 @@ def is_postgres(db_path: str = None) -> bool:
 def get_connection(db_path: str = None):
     """Создаёт подключение к PostgreSQL или SQLite в зависимости от конфигурации."""
     if is_postgres(db_path):
+        pool_inst = _get_pg_pool()
+        if pool_inst:
+            try:
+                raw_conn = pool_inst.getconn()
+                if raw_conn.closed != 0:
+                    try:
+                        pool_inst.putconn(raw_conn, close=True)
+                    except Exception:
+                        pass
+                    raw_conn = pool_inst.getconn()
+                raw_conn.autocommit = False
+                return PooledConnectionWrapper(raw_conn, pool_inst)
+            except Exception as e:
+                logger.warning(f"[DB] Не удалось взять соединение из пула ({e}), прямое подключение...")
         conn = psycopg2.connect(get_database_url())
         conn.autocommit = False
         return conn
