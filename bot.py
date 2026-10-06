@@ -54,9 +54,13 @@ from database import (
     get_user_info,
     get_total_users,
     get_total_scans,
+    get_scan,
 )
 from emoji_helper import tag, btn_id
 from analyzer import analyze_label, format_analysis_html
+from card_generator import create_report_card
+import json
+
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -156,30 +160,38 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def analysis_keyboard() -> InlineKeyboardMarkup:
+def analysis_keyboard(scan_id: int | None = None) -> InlineKeyboardMarkup:
     """Кнопки под результатом анализа состава."""
-    rows = [
-        [
+    rows = []
+    if scan_id:
+        rows.append([
             InlineKeyboardButton(
-                text="Сканировать ещё",
-                callback_data="guide",
-                icon_custom_emoji_id=btn_id("loading"),
-            ),
-            InlineKeyboardButton(
-                text="Мой профиль",
-                callback_data="profile",
-                icon_custom_emoji_id=btn_id("profile"),
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                text="Оформить Премиум",
-                callback_data="premium",
-                icon_custom_emoji_id=btn_id("money"),
-            ),
-        ],
-    ]
+                text="🖼 Карточка-отчёт (PNG)",
+                callback_data=f"card_{scan_id}",
+                icon_custom_emoji_id=btn_id("photo"),
+            )
+        ])
+    rows.append([
+        InlineKeyboardButton(
+            text="Сканировать ещё",
+            callback_data="guide",
+            icon_custom_emoji_id=btn_id("loading"),
+        ),
+        InlineKeyboardButton(
+            text="Мой профиль",
+            callback_data="profile",
+            icon_custom_emoji_id=btn_id("profile"),
+        ),
+    ])
+    rows.append([
+        InlineKeyboardButton(
+            text="Оформить Премиум",
+            callback_data="premium",
+            icon_custom_emoji_id=btn_id("money"),
+        ),
+    ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
 
 
 def back_keyboard() -> InlineKeyboardMarkup:
@@ -331,18 +343,27 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo_bytes = await photo_file.download_as_bytearray()
         analysis = await analyze_label(bytes(photo_bytes))
 
-        # Списываем попытку только при успешном распознавании этикетки
+        # Списываем попытку и сохраняем данные только при успешном распознавании этикетки
+        scan_id = None
         if "error" not in analysis:
             product_name = analysis.get("product_name") or "Нераспознано"
             score = analysis.get("score")
-            add_scan(user.id, product_name, str(score) if score is not None else None, status="success")
+            analysis_json_str = json.dumps(analysis, ensure_ascii=False)
+            scan_id = add_scan(
+                user.id,
+                product_name,
+                str(score) if score is not None else None,
+                status="success",
+                analysis_json=analysis_json_str,
+            )
 
         reply_html = format_analysis_html(analysis)
         await status_msg.edit_text(
             text=reply_html,
             parse_mode=ParseMode.HTML,
-            reply_markup=analysis_keyboard(),
+            reply_markup=analysis_keyboard(scan_id=scan_id),
         )
+
 
     except Exception as e:
         logger.error(f"Ошибка при обработке фото: {e}")
@@ -501,6 +522,44 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode=ParseMode.HTML,
             reply_markup=back_keyboard(),
         )
+
+    elif data.startswith("card_"):
+        try:
+            scan_id = int(data.split("_")[1])
+            scan = get_scan(scan_id)
+            if not scan or not scan.get("analysis_json"):
+                await query.answer("Карточка для этого анализа устарела. Сделайте новый скан!", show_alert=True)
+                return
+
+            await query.answer("Генерирую инфографику...")
+            analysis_data = json.loads(scan["analysis_json"])
+            card_bytes = create_report_card(
+                product_name=analysis_data.get("product_name", "Продукт"),
+                score_str=analysis_data.get("score", "5.0/10"),
+                verdict=analysis_data.get("verdict", ""),
+                warnings=analysis_data.get("warnings", []),
+                positives=analysis_data.get("positives", []),
+            )
+
+            bot_user = context.bot.username or "labelspy_bot"
+            product_name_clean = html.escape(str(analysis_data.get("product_name", "Продукт")))
+            score_clean = html.escape(str(analysis_data.get("score", "5.0/10")))
+
+            caption = (
+                f"📊 <b>Инфографика:</b> {product_name_clean}\n"
+                f"⭐ Рейтинг безопасности: <code>{score_clean}</code>\n\n"
+                f"<i>🤖 Проверено в @{bot_user}</i>"
+            )
+
+            await query.message.reply_photo(
+                photo=card_bytes,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as e:
+            logger.error(f"Ошибка генерации карточки: {e}")
+            await query.answer("Не удалось сгенерировать карточку отчёта.", show_alert=True)
+
 
 
 async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):

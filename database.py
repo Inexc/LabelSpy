@@ -1,10 +1,25 @@
 """
-Модуль работы с базой данных SQLite для LabelSpy.
-Поддерживает миграции, временную зону UTC, срочные подписки и идемпотентные платежи.
+Модуль работы с базой данных для LabelSpy.
+Поддерживает как облачный PostgreSQL (Neon / Supabase / Render Postgres через DATABASE_URL),
+так и локальный SQLite (labelspy.db) для разработки и офлайн-тестов.
+Включает автоматические миграции, хранение analysis_json для карточек,
+срочные подписки и идемпотентные платежи по стандарту UTC.
 """
 
+import os
+import json
 import sqlite3
+import logging
 from datetime import datetime, timezone, timedelta
+
+logger = logging.getLogger(__name__)
+
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    HAS_PSYCOPG2 = True
+except ImportError:
+    HAS_PSYCOPG2 = False
 
 DB_PATH = "labelspy.db"
 
@@ -24,84 +39,179 @@ def get_month_start_utc() -> str:
     return get_utc_now().strftime("%Y-%m-01 00:00:00")
 
 
+def get_database_url() -> str | None:
+    """Возвращает очищенный URL подключения к PostgreSQL при наличии."""
+    url = os.getenv("DATABASE_URL")
+    if url and url.strip():
+        url = url.strip()
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        return url
+    return None
+
+
+def is_postgres(db_path: str = None) -> bool:
+    """Определяет, используется ли PostgreSQL в текущем окружении."""
+    if db_path:
+        return False
+    return HAS_PSYCOPG2 and bool(get_database_url())
+
+
 def get_connection(db_path: str = None):
-    """Создаёт подключение к базе данных с увеличенным таймаутом."""
-    conn = sqlite3.connect(db_path or DB_PATH, timeout=20.0)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Создаёт подключение к PostgreSQL или SQLite в зависимости от конфигурации."""
+    if is_postgres(db_path):
+        conn = psycopg2.connect(get_database_url())
+        conn.autocommit = False
+        return conn
+    else:
+        conn = sqlite3.connect(db_path or DB_PATH, timeout=20.0)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+
+def _run_query(conn, sql: str, params: tuple = (), fetchone: bool = False, fetchall: bool = False, commit: bool = False):
+    """
+    Универсальный помощник выполнения SQL для SQLite и PostgreSQL.
+    Автоматически переводит плейсхолдеры '?' в '%s' для PostgreSQL.
+    """
+    is_pg = hasattr(conn, "status") or "psycopg2" in str(type(conn)).lower()
+    if is_pg:
+        sql = sql.replace("?", "%s")
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+    else:
+        cursor = conn.cursor()
+
+    cursor.execute(sql, params)
+
+    result = None
+    if fetchone:
+        row = cursor.fetchone()
+        result = dict(row) if row else None
+    elif fetchall:
+        rows = cursor.fetchall()
+        result = [dict(r) for r in rows]
+
+    if commit:
+        conn.commit()
+
+    return cursor, result
 
 
 def init_db(db_path: str = None):
     """
-    Создаёт таблицы и применяет миграции схемы без потери пользовательских данных.
+    Создаёт таблицы и применяет миграции схемы для PostgreSQL или SQLite.
     """
     conn = get_connection(db_path)
-    conn.execute("PRAGMA journal_mode = WAL;")
-    cursor = conn.cursor()
+    is_pg = is_postgres(db_path)
 
-    # 1. Таблица пользователей
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            joined_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            is_premium INTEGER DEFAULT 0,
-            premium_until TEXT DEFAULT NULL
-        )
-    """)
+    if not is_pg:
+        conn.execute("PRAGMA journal_mode = WAL;")
 
-    # Миграция: проверяем наличие столбца premium_until в существующих БД
-    cursor.execute("PRAGMA table_info(users)")
-    user_columns = [row["name"] for row in cursor.fetchall()]
-    if "premium_until" not in user_columns:
-        cursor.execute("ALTER TABLE users ADD COLUMN premium_until TEXT DEFAULT NULL")
-        # Для пользователей со старым флагом is_premium=1 задаем стартовый срок (30 дней от текущего момента)
-        legacy_until = (get_utc_now() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute(
-            "UPDATE users SET premium_until = ? WHERE is_premium = 1 AND premium_until IS NULL",
-            (legacy_until,)
-        )
+    if is_pg:
+        # PostgreSQL схема
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    joined_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    is_premium INTEGER DEFAULT 0,
+                    premium_until TEXT DEFAULT NULL
+                );
 
-    # 2. Таблица сканирований
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS scans (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            scanned_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            product_name TEXT,
-            rating TEXT,
-            status TEXT DEFAULT 'success',
-            FOREIGN KEY (user_id) REFERENCES users(user_id)
-        )
-    """)
+                CREATE TABLE IF NOT EXISTS scans (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    scanned_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    product_name TEXT,
+                    rating TEXT,
+                    status TEXT DEFAULT 'success',
+                    analysis_json TEXT DEFAULT NULL
+                );
 
-    # Миграция: проверяем наличие столбца status в таблице scans
-    cursor.execute("PRAGMA table_info(scans)")
-    scan_columns = [row["name"] for row in cursor.fetchall()]
-    if "status" not in scan_columns:
-        cursor.execute("ALTER TABLE scans ADD COLUMN status TEXT DEFAULT 'success'")
+                CREATE TABLE IF NOT EXISTS payments (
+                    id SERIAL PRIMARY KEY,
+                    telegram_charge_id TEXT UNIQUE NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    amount INTEGER NOT NULL,
+                    currency TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    duration_days INTEGER NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
 
-    # Индекс для ускорения выборки лимита сканов по месяцам
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_scans_user_time ON scans(user_id, scanned_at)")
+                CREATE INDEX IF NOT EXISTS idx_scans_user_time ON scans(user_id, scanned_at);
+                CREATE INDEX IF NOT EXISTS idx_payments_charge ON payments(telegram_charge_id);
 
-    # 3. Таблица платежей (для идемпотентности и аудита)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS payments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_charge_id TEXT UNIQUE NOT NULL,
-            user_id INTEGER NOT NULL,
-            amount INTEGER NOT NULL,
-            currency TEXT NOT NULL,
-            payload TEXT NOT NULL,
-            duration_days INTEGER NOT NULL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(user_id)
-        )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_charge ON payments(telegram_charge_id)")
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_until TEXT DEFAULT NULL;
+                ALTER TABLE scans ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'success';
+                ALTER TABLE scans ADD COLUMN IF NOT EXISTS analysis_json TEXT DEFAULT NULL;
+            """)
+        conn.commit()
+    else:
+        # SQLite схема
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                joined_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                is_premium INTEGER DEFAULT 0,
+                premium_until TEXT DEFAULT NULL
+            )
+        """)
 
-    conn.commit()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS scans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                scanned_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                product_name TEXT,
+                rating TEXT,
+                status TEXT DEFAULT 'success',
+                analysis_json TEXT DEFAULT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_charge_id TEXT UNIQUE NOT NULL,
+                user_id INTEGER NOT NULL,
+                amount INTEGER NOT NULL,
+                currency TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                duration_days INTEGER NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            )
+        """)
+
+        # Миграции SQLite
+        cursor.execute("PRAGMA table_info(users)")
+        user_cols = [r["name"] for r in cursor.fetchall()]
+        if "premium_until" not in user_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN premium_until TEXT DEFAULT NULL")
+            legacy_until = (get_utc_now() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute(
+                "UPDATE users SET premium_until = ? WHERE is_premium = 1 AND premium_until IS NULL",
+                (legacy_until,)
+            )
+
+        cursor.execute("PRAGMA table_info(scans)")
+        scan_cols = [r["name"] for r in cursor.fetchall()]
+        if "status" not in scan_cols:
+            cursor.execute("ALTER TABLE scans ADD COLUMN status TEXT DEFAULT 'success'")
+        if "analysis_json" not in scan_cols:
+            cursor.execute("ALTER TABLE scans ADD COLUMN analysis_json TEXT DEFAULT NULL")
+
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_scans_user_time ON scans(user_id, scanned_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_charge ON payments(telegram_charge_id)")
+        conn.commit()
+
     conn.close()
 
 
@@ -110,30 +220,25 @@ def add_user(user_id: int, username: str, first_name: str, db_path: str = None):
     Добавляет нового пользователя или обновляет имя и username при изменении.
     """
     conn = get_connection(db_path)
-    cursor = conn.cursor()
     now_str = get_utc_now_str()
-    cursor.execute("""
+    sql = """
         INSERT INTO users (user_id, username, first_name, joined_at)
         VALUES (?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             username = excluded.username,
             first_name = excluded.first_name
-    """, (user_id, username, first_name, now_str))
-    conn.commit()
+    """
+    _run_query(conn, sql, (user_id, username, first_name, now_str), commit=True)
     conn.close()
 
 
 def get_user_info(user_id: int, db_path: str = None) -> dict | None:
     """Возвращает информацию о пользователе из БД с актуальным статусом подписки."""
-    # Обновляем статус подписки, если срок истёк
     is_premium(user_id, db_path=db_path)
-
     conn = get_connection(db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
+    _, user = _run_query(conn, "SELECT * FROM users WHERE user_id = ?", (user_id,), fetchone=True)
     conn.close()
-    return dict(result) if result else None
+    return user
 
 
 def is_premium(user_id: int, db_path: str = None) -> bool:
@@ -142,15 +247,13 @@ def is_premium(user_id: int, db_path: str = None) -> bool:
     Если срок истёк, автоматически сбрасывает статус.
     """
     conn = get_connection(db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT is_premium, premium_until FROM users WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
+    _, result = _run_query(conn, "SELECT is_premium, premium_until FROM users WHERE user_id = ?", (user_id,), fetchone=True)
 
     if not result:
         conn.close()
         return False
 
-    prem_until_str = result["premium_until"]
+    prem_until_str = result.get("premium_until")
     now_str = get_utc_now_str()
 
     if prem_until_str:
@@ -158,29 +261,24 @@ def is_premium(user_id: int, db_path: str = None) -> bool:
             conn.close()
             return True
         else:
-            # Срок истёк — обновляем флаг в БД
-            if result["is_premium"] != 0:
-                cursor.execute("UPDATE users SET is_premium = 0 WHERE user_id = ?", (user_id,))
-                conn.commit()
+            if result.get("is_premium") != 0:
+                _run_query(conn, "UPDATE users SET is_premium = 0 WHERE user_id = ?", (user_id,), commit=True)
             conn.close()
             return False
 
-    # Если даты окончания нет, но флаг стоит (редкий legacy случай)
-    has_prem = bool(result["is_premium"])
+    has_prem = bool(result.get("is_premium"))
     conn.close()
     return has_prem
 
 
 def get_premium_until(user_id: int, db_path: str = None) -> str | None:
-    """Возвращает дату и время окончания подписки в формате UTC, если она активна."""
+    """Возвращает дату окончания подписки в формате UTC, если она активна."""
     if not is_premium(user_id, db_path=db_path):
         return None
     conn = get_connection(db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT premium_until FROM users WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
+    _, row = _run_query(conn, "SELECT premium_until FROM users WHERE user_id = ?", (user_id,), fetchone=True)
     conn.close()
-    return row["premium_until"] if row else None
+    return row.get("premium_until") if row else None
 
 
 def grant_premium(user_id: int, duration_days: int, db_path: str = None) -> str:
@@ -190,14 +288,12 @@ def grant_premium(user_id: int, duration_days: int, db_path: str = None) -> str:
     Возвращает новую дату окончания подписки в формате UTC.
     """
     conn = get_connection(db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT premium_until FROM users WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
+    _, row = _run_query(conn, "SELECT premium_until FROM users WHERE user_id = ?", (user_id,), fetchone=True)
 
     now_utc = get_utc_now()
     now_str = get_utc_now_str()
 
-    current_until_str = row["premium_until"] if row else None
+    current_until_str = row.get("premium_until") if row else None
     if current_until_str and current_until_str > now_str:
         try:
             base_date = datetime.strptime(current_until_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
@@ -209,29 +305,20 @@ def grant_premium(user_id: int, duration_days: int, db_path: str = None) -> str:
     new_until = base_date + timedelta(days=duration_days)
     new_until_str = new_until.strftime("%Y-%m-%d %H:%M:%S")
 
-    cursor.execute(
-        "UPDATE users SET is_premium = 1, premium_until = ? WHERE user_id = ?",
-        (new_until_str, user_id)
-    )
-    conn.commit()
+    sql = "UPDATE users SET is_premium = 1, premium_until = ? WHERE user_id = ?"
+    _run_query(conn, sql, (new_until_str, user_id), commit=True)
     conn.close()
     return new_until_str
 
 
 def set_premium(user_id: int, status: bool = True, duration_days: int = 30, db_path: str = None) -> str | None:
-    """
-    Управляет премиум-статусом (совместимость со старым API с поддержкой срока действия).
-    """
+    """Управляет премиум-статусом (совместимость со старым интерфейсом)."""
     if status:
         return grant_premium(user_id, duration_days=duration_days, db_path=db_path)
     else:
         conn = get_connection(db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE users SET is_premium = 0, premium_until = NULL WHERE user_id = ?",
-            (user_id,)
-        )
-        conn.commit()
+        sql = "UPDATE users SET is_premium = 0, premium_until = NULL WHERE user_id = ?"
+        _run_query(conn, sql, (user_id,), commit=True)
         conn.close()
         return None
 
@@ -248,49 +335,37 @@ def record_successful_payment(
     """
     Идемпотентно сохраняет платёж и начисляет подписку.
     Возвращает (is_new_payment, premium_until_str).
-    Если платёж с таким charge_id уже обработан, повторно дни не начисляются.
     """
     conn = get_connection(db_path)
-    cursor = conn.cursor()
-
-    # Проверяем, не был ли этот charge_id уже записан
-    cursor.execute("SELECT id FROM payments WHERE telegram_charge_id = ?", (charge_id,))
-    existing = cursor.fetchone()
+    _, existing = _run_query(conn, "SELECT id FROM payments WHERE telegram_charge_id = ?", (charge_id,), fetchone=True)
     if existing:
         conn.close()
         current_until = get_premium_until(user_id, db_path=db_path) or ""
         return False, current_until
 
-    # Записываем платёж
     now_str = get_utc_now_str()
-    cursor.execute("""
+    sql = """
         INSERT INTO payments (telegram_charge_id, user_id, amount, currency, payload, duration_days, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (charge_id, user_id, amount, currency, payload, duration_days, now_str))
-    conn.commit()
+    """
+    _run_query(conn, sql, (charge_id, user_id, amount, currency, payload, duration_days, now_str), commit=True)
     conn.close()
 
-    # Начисляем дни
     new_until = grant_premium(user_id, duration_days=duration_days, db_path=db_path)
     return True, new_until
 
 
 def get_monthly_scan_count(user_id: int, db_path: str = None) -> int:
-    """
-    Считает количество успешных сканов в текущем календарном месяце строго по UTC.
-    """
+    """Считает количество успешных сканов в текущем календарном месяце строго по UTC."""
     conn = get_connection(db_path)
-    cursor = conn.cursor()
-
     month_start = get_month_start_utc()
-
-    cursor.execute("""
+    sql = """
         SELECT COUNT(*) as cnt FROM scans
         WHERE user_id = ? AND scanned_at >= ? AND (status = 'success' OR status IS NULL)
-    """, (user_id, month_start))
-    result = cursor.fetchone()
+    """
+    _, res = _run_query(conn, sql, (user_id, month_start), fetchone=True)
     conn.close()
-    return result["cnt"] if result else 0
+    return res.get("cnt", 0) if res else 0
 
 
 def add_scan(
@@ -298,41 +373,50 @@ def add_scan(
     product_name: str = None,
     rating: str = None,
     status: str = "success",
+    analysis_json: str = None,
     db_path: str = None
 ) -> int:
     """
-    Записывает факт сканирования в базу с текущей временной меткой UTC.
+    Записывает факт сканирования в базу, включая analysis_json для генерации карточки.
     """
     conn = get_connection(db_path)
-    cursor = conn.cursor()
     scanned_at = get_utc_now_str()
-
-    cursor.execute("""
-        INSERT INTO scans (user_id, scanned_at, product_name, rating, status)
-        VALUES (?, ?, ?, ?, ?)
-    """, (user_id, scanned_at, product_name or "Нераспознано", str(rating) if rating is not None else None, status))
-
-    scan_id = cursor.lastrowid
-    conn.commit()
+    sql = """
+        INSERT INTO scans (user_id, scanned_at, product_name, rating, status, analysis_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        RETURNING id
+    """
+    cursor, row = _run_query(
+        conn,
+        sql,
+        (user_id, scanned_at, product_name or "Нераспознано", str(rating) if rating is not None else None, status, analysis_json),
+        fetchone=True,
+        commit=True
+    )
+    scan_id = row.get("id") if row else cursor.lastrowid
     conn.close()
     return scan_id
+
+
+def get_scan(scan_id: int, db_path: str = None) -> dict | None:
+    """Возвращает информацию о скане по его ID."""
+    conn = get_connection(db_path)
+    _, scan = _run_query(conn, "SELECT * FROM scans WHERE id = ?", (scan_id,), fetchone=True)
+    conn.close()
+    return scan
 
 
 def get_total_users(db_path: str = None) -> int:
     """Возвращает общее количество пользователей."""
     conn = get_connection(db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) as cnt FROM users")
-    result = cursor.fetchone()
+    _, res = _run_query(conn, "SELECT COUNT(*) as cnt FROM users", fetchone=True)
     conn.close()
-    return result["cnt"] if result else 0
+    return res.get("cnt", 0) if res else 0
 
 
 def get_total_scans(db_path: str = None) -> int:
     """Возвращает общее количество успешных сканов."""
     conn = get_connection(db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) as cnt FROM scans WHERE status = 'success' OR status IS NULL")
-    result = cursor.fetchone()
+    _, res = _run_query(conn, "SELECT COUNT(*) as cnt FROM scans WHERE status = 'success' OR status IS NULL", fetchone=True)
     conn.close()
-    return result["cnt"] if result else 0
+    return res.get("cnt", 0) if res else 0

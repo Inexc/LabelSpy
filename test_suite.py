@@ -196,6 +196,48 @@ class TestDatabaseAndSubscriptions(unittest.TestCase):
         # Должно быть ровно 3 (только успешные сканы текущего месяца)
         self.assertEqual(count, 3)
 
+    def test_scan_saving_and_card_retrieval(self):
+        """Проверяет сохранение analysis_json и генерацию карточки инфографики."""
+        import json
+        import card_generator
+
+        database.init_db(db_path=self.db_path)
+        user_id = 888
+        database.add_user(user_id, "card_user", "Tester", db_path=self.db_path)
+
+        analysis_mock = {
+            "product_name": "Gold Whey Isolate",
+            "score": "9.0/10",
+            "verdict": "Качественный состав.",
+            "positives": ["Чистый белок"],
+            "warnings": []
+        }
+        json_str = json.dumps(analysis_mock, ensure_ascii=False)
+        scan_id = database.add_scan(
+            user_id=user_id,
+            product_name=analysis_mock["product_name"],
+            rating="9.0",
+            status="success",
+            analysis_json=json_str,
+            db_path=self.db_path
+        )
+        self.assertIsNotNone(scan_id)
+
+        retrieved = database.get_scan(scan_id, db_path=self.db_path)
+        self.assertIsNotNone(retrieved)
+        self.assertEqual(retrieved["product_name"], "Gold Whey Isolate")
+        self.assertEqual(retrieved["analysis_json"], json_str)
+
+        card_bytes = card_generator.create_report_card(
+            product_name=analysis_mock["product_name"],
+            score_str=analysis_mock["score"],
+            verdict=analysis_mock["verdict"],
+            warnings=analysis_mock["warnings"],
+            positives=analysis_mock["positives"]
+        )
+        self.assertGreater(len(card_bytes), 1000)
+
+
 
 class TestConcurrencyAndAbuseProtection(unittest.TestCase):
     def test_active_user_scan_lock(self):

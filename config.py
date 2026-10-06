@@ -9,8 +9,12 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 # Google Gemini API Key
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+# URL базы данных (PostgreSQL на Neon/Supabase/Render Postgres, либо SQLite при отсутствии)
+DATABASE_URL = os.getenv("DATABASE_URL")
+
 # Бесплатный лимит сканов в месяц
 FREE_SCANS_PER_MONTH = 5
+
 
 # Название бота
 BOT_NAME = "LabelSpy"
