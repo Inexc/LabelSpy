@@ -1,7 +1,9 @@
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+ENV_PATH = Path(__file__).resolve().parent / ".env"
+load_dotenv(ENV_PATH)
 
 # Telegram Bot Token
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
