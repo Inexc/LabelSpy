@@ -1,13 +1,11 @@
 """
-Модуль для работы с Telegram Premium эмодзи
-Использует точный список ID, предоставленный пользователем.
-
-Правила:
-- В тексте сообщений: <tg-emoji emoji-id="ID">эмодзи</tg-emoji> + parse_mode=HTML
-- В кнопках (Inline и Reply): icon_custom_emoji_id="ID", текст кнопки БЕЗ эмодзи
+Модуль для работы с эмодзи Telegram (поддерживает как кастомные Telegram Premium эмодзи,
+так и стандартные Unicode-эмодзи при отключении или для других ботов).
 """
 
-# Список точных эмодзи из пака пользователя
+from config import USE_CUSTOM_EMOJI
+
+# Список эмодзи с fallback для стандартного отображения
 EMOJI = {
     # Системные и управление
     "settings": {"id": "5870982283724328568", "fallback": "⚙️"},
@@ -65,19 +63,23 @@ EMOJI = {
 
 def tag(name: str) -> str:
     """
-    Возвращает HTML-тег <tg-emoji> для вставки в текст сообщения.
-    Пример: tag('settings') -> <tg-emoji emoji-id="5870982283724328568">⚙️</tg-emoji>
+    Возвращает HTML-тег <tg-emoji> для кастомных эмодзи либо стандартный Unicode-эмодзи,
+    если кастомные эмодзи отключены в настройках (USE_CUSTOM_EMOJI=False).
     """
     item = EMOJI.get(name)
     if not item:
         return ""
+    if not USE_CUSTOM_EMOJI or not item.get("id"):
+        return item.get("fallback", "")
     return f'<tg-emoji emoji-id="{item["id"]}">{item["fallback"]}</tg-emoji>'
 
 
-def btn_id(name: str) -> str:
+def btn_id(name: str) -> str | None:
     """
-    Возвращает точный ID для передачи в icon_custom_emoji_id кнопки.
-    Пример: btn_id('photo') -> '6035128606563241721'
+    Возвращает точный ID для передачи в icon_custom_emoji_id кнопки либо None,
+    если кастомные эмодзи отключены в настройках.
     """
+    if not USE_CUSTOM_EMOJI:
+        return None
     item = EMOJI.get(name)
-    return item["id"] if item else ""
+    return item["id"] if item and item.get("id") else None

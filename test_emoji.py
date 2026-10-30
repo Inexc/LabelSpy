@@ -15,7 +15,12 @@ def run_live_emoji_test():
         print("TELEGRAM_TOKEN is missing.")
         return False
 
-    chat_id = int(os.getenv("ADMIN_ID", "871764715"))
+    admin_env = os.getenv("ADMIN_ID")
+    if not admin_env or not admin_env.strip().isdigit():
+        print("Live test skipped: ADMIN_ID is not configured in .env.")
+        return False
+
+    chat_id = int(admin_env.strip())
     payload = {
         "chat_id": chat_id,
         "text": 'Тест кастом эмодзи: <tg-emoji emoji-id="5870982283724328568">⚙️</tg-emoji>',

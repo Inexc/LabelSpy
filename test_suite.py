@@ -348,6 +348,21 @@ class TestAnalyzerAndValidation(unittest.TestCase):
         self.assertIsNone(img2)
         self.assertIn("Не удалось открыть", err2)
 
+    def test_card_generator_cyrillic_and_fonts(self):
+        """Проверяет генерацию карточки с кириллицей и работу кэша шрифтов."""
+        from card_generator import create_report_card, get_font
+        font = get_font(16)
+        self.assertIsNotNone(font)
+        card_bytes = create_report_card(
+            product_name="Тестовый напиток",
+            score_str="4.0/10",
+            verdict="Тестовый вердикт на русском языке",
+            warnings=["Предупреждение 1", "Предупреждение 2"],
+            positives=["Плюс 1"]
+        )
+        self.assertTrue(card_bytes.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertGreater(len(card_bytes), 1000)
+
 
 if __name__ == "__main__":
     unittest.main()

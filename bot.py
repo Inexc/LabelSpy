@@ -35,6 +35,7 @@ from config import (
     TELEGRAM_TOKEN,
     FREE_SCANS_PER_MONTH,
     BOT_NAME,
+    BOT_USERNAME,
     ADMIN_ID,
     PREMIUM_STARS_PRICE,
     PREMIUM_SUBSCRIPTION_DAYS,
@@ -77,9 +78,9 @@ class HealthHandler(BaseHTTPRequestHandler):
     """Эндпоинт для облачных хостингов (Render, Koyeb и др.)."""
     def do_GET(self):
         self.send_response(200)
-        self.send_header("Content-type", "text/plain")
+        self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b"OK - LabelSpy Bot is running!")
+        self.wfile.write(f"OK - {BOT_NAME} Bot is running!".encode("utf-8"))
 
     def log_message(self, format, *args):
         pass
@@ -219,7 +220,7 @@ def premium_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
             )
         ],
     ]
-    if user_id == ADMIN_ID:
+    if ADMIN_ID is not None and user_id == ADMIN_ID:
         rows.append([
             InlineKeyboardButton(
                 text=f"Тестовый доступ ({DEMO_PREMIUM_DAYS} дн.)",
@@ -245,7 +246,7 @@ def get_start_text(user) -> str:
     limit_text = "Безлимитно" if user_has_prem else f"{remaining_scans} из {FREE_SCANS_PER_MONTH}"
 
     return (
-        f"{tag('bot')} <b>LABELSPY · AI СКАНИРОВАНИЕ СОСТАВА</b>\n\n"
+        f"{tag('bot')} <b>{BOT_NAME.upper()} · AI СКАНИРОВАНИЕ СОСТАВА</b>\n\n"
         f"<blockquote>🤖 Персональный независимый AI-анализатор чистоты продуктов и добавок прямо в Telegram.</blockquote>\n\n"
         f"• {tag('file')} <b>Спортпит и витамины:</b> проверка реальных дозировок и качества сырья\n"
         f"• {tag('cross')} <b>Контроль рисков:</b> выявление скрытого сахара, трансжиров и вредных добавок\n"
@@ -303,7 +304,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         limit_msg = (
             f"❌ <b>Лимит бесплатных сканов исчерпан!</b>\n\n"
             f"Вы использовали все {FREE_SCANS_PER_MONTH} бесплатных сканов в текущем месяце.\n\n"
-            f"💎 Оформите <b>LabelSpy Premium</b> для безлимитного анализа без ограничений!"
+            f"💎 Оформите <b>{BOT_NAME} Premium</b> для безлимитного анализа без ограничений!"
         )
         await update.message.reply_text(
             text=limit_msg,
@@ -387,7 +388,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     data = query.data
 
     # Защита от повторного query.answer(): обработка алерта для не-админа
-    if data == "activate_test_premium" and user.id != ADMIN_ID:
+    if data == "activate_test_premium" and (ADMIN_ID is None or user.id != ADMIN_ID):
         await query.answer("Эта опция доступна только администратору.", show_alert=True)
         return
 
@@ -461,7 +462,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     elif data == "about":
         text = (
             f"ℹ️ <b>О сервисе {BOT_NAME}</b>\n\n"
-            f"🤖 <b>LabelSpy</b> — независимый эксперт по составам продуктов и добавок.\n\n"
+            f"🤖 <b>{BOT_NAME}</b> — независимый эксперт по составам продуктов и добавок.\n\n"
             f"Многие производители маскируют вредные добавки и экономят на сырье.\n\n"
             f"<b>✅ Что проверяет наш AI:</b>\n"
             f"• Чистоту спортивных добавок (протеин, креатин, BCAA)\n"
@@ -477,9 +478,9 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
     elif data == "premium":
-        demo_hint = f" (или демо на {DEMO_PREMIUM_DAYS} дн.)" if user.id == ADMIN_ID else ""
+        demo_hint = f" (или демо на {DEMO_PREMIUM_DAYS} дн.)" if (ADMIN_ID is not None and user.id == ADMIN_ID) else ""
         text = (
-            f"{tag('money')} <b>LabelSpy Premium</b>\n\n"
+            f"{tag('money')} <b>{BOT_NAME} Premium</b>\n\n"
             "Премиум-возможности подписки:\n"
             f"• {tag('check')} <b>Безлимитный AI-анализ</b> 24/7 (без месячных лимитов)\n"
             f"• {tag('stats')} <b>Детальный разбор добавок</b>, Е-кодов и скрытого сахара\n"
@@ -494,7 +495,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
     elif data == "buy_premium_stars":
-        title = f"LabelSpy Premium ({PREMIUM_SUBSCRIPTION_DAYS} дней)"
+        title = f"{BOT_NAME} Premium ({PREMIUM_SUBSCRIPTION_DAYS} дней)"
         description = "Безлимитный AI-анализ составов продуктов, добавок и спортивного питания 24/7."
         payload = f"premium_1m_{user.id}"
         currency = "XTR"
@@ -511,7 +512,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
     elif data == "activate_test_premium":
-        if user.id != ADMIN_ID:
+        if ADMIN_ID is None or user.id != ADMIN_ID:
             return
         new_until = grant_premium(user.id, duration_days=DEMO_PREMIUM_DAYS)
         await query.message.edit_text(
@@ -541,14 +542,15 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 positives=analysis_data.get("positives", []),
             )
 
-            bot_user = context.bot.username or "labelspy_bot"
+            clean_username = BOT_USERNAME.strip().lstrip("@") if BOT_USERNAME else (context.bot.username or "")
+            bot_tag = f"@{clean_username}" if clean_username else BOT_NAME
             product_name_clean = html.escape(str(analysis_data.get("product_name", "Продукт")))
             score_clean = html.escape(str(analysis_data.get("score", "5.0/10")))
 
             caption = (
                 f"📊 <b>Инфографика:</b> {product_name_clean}\n"
                 f"⭐ Рейтинг безопасности: <code>{score_clean}</code>\n\n"
-                f"<i>🤖 Проверено в @{bot_user}</i>"
+                f"<i>🤖 Проверено в {bot_tag}</i>"
             )
 
             await query.message.reply_photo(
@@ -614,7 +616,7 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
     if is_new:
         text = (
             f"🎉 <b>Оплата прошла успешно!</b>\n\n"
-            f"Вам начислен <b>LabelSpy Premium</b> на {PREMIUM_SUBSCRIPTION_DAYS} дней.\n"
+            f"Вам начислен <b>{BOT_NAME} Premium</b> на {PREMIUM_SUBSCRIPTION_DAYS} дней.\n"
             f"Сумма: <code>{payment.total_amount} ⭐ Telegram Stars</code>.\n"
             f"📅 <b>Подписка активна до:</b> <code>{new_until} (UTC)</code>\n\n"
             f"Теперь у вас полный безлимит на сканирование этикеток 24/7! 📷"
@@ -622,7 +624,7 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
     else:
         text = (
             f"ℹ️ <b>Этот платёж уже был учтён ранее.</b>\n\n"
-            f"Ваш <b>LabelSpy Premium</b> активен до: <code>{new_until} (UTC)</code>.\n"
+            f"Ваш <b>{BOT_NAME} Premium</b> активен до: <code>{new_until} (UTC)</code>.\n"
             f"Повторное продление не производилось."
         )
 
@@ -689,9 +691,9 @@ async def handle_text_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif "премиум" in text:
-        demo_hint = f" (или демо на {DEMO_PREMIUM_DAYS} дн.)" if user.id == ADMIN_ID else ""
+        demo_hint = f" (или демо на {DEMO_PREMIUM_DAYS} дн.)" if (ADMIN_ID is not None and user.id == ADMIN_ID) else ""
         msg = (
-            f"{tag('money')} <b>LabelSpy Premium</b>\n\n"
+            f"{tag('money')} <b>{BOT_NAME} Premium</b>\n\n"
             "Премиум-возможности подписки:\n"
             f"• {tag('check')} <b>Безлимитный AI-анализ</b> 24/7 (без месячных лимитов)\n"
             f"• {tag('stats')} <b>Детальный разбор добавок</b>, Е-кодов и скрытого сахара\n"
@@ -708,7 +710,7 @@ async def handle_text_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif "сервис" in text or "инфо" in text:
         msg = (
             f"{tag('info')} <b>О сервисе {BOT_NAME}</b>\n\n"
-            f"{tag('bot')} <b>LabelSpy</b> — независимый эксперт по составам продуктов и добавок.\n\n"
+            f"{tag('bot')} <b>{BOT_NAME}</b> — независимый эксперт по составам продуктов и добавок.\n\n"
             f"Многие производители маскируют вредные добавки и экономят на сырье.\n\n"
             f"<b>{tag('check')} Что проверяет наш AI:</b>\n"
             f"• Чистоту спортивных добавок (протеин, креатин, BCAA)\n"
@@ -770,7 +772,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Статистика бота для администратора."""
     user = update.effective_user
-    if user.id != ADMIN_ID:
+    if ADMIN_ID is None or user.id != ADMIN_ID:
         return
     total_users = get_total_users()
     total_scans = get_total_scans()
@@ -803,7 +805,8 @@ def main():
     application.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_photo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_menu))
 
-    print(f"Бот @labelspy_bot успешно запущен!")
+    bot_info_str = f"@{BOT_USERNAME.lstrip('@')}" if BOT_USERNAME else BOT_NAME
+    print(f"Бот {bot_info_str} успешно запущен!")
     application.run_polling()
 
 

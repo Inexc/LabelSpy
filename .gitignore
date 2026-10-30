@@ -1,7 +1,33 @@
+# Окружение и секреты
 .env
+.env.*
+!.env.example
+
+# База данных SQLite
+labelspy.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+
+# Python кэш и байткод
 __pycache__/
+*.py[cod]
+*$py.class
 *.pyc
 *.pyo
-labelspy.db
+
+# Виртуальные окружения
+venv/
+.venv/
+env/
+ENV/
+
+# Временные файлы тестов и отчётов
 test_output.json
 test_card.png
+*.log
+
+# Системные файлы
+.DS_Store
+Thumbs.db
