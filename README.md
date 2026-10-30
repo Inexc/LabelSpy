@@ -93,7 +93,8 @@ python bot.py
 | `ADMIN_ID` | Нет | — | Числовой Telegram ID администратора. Если не задан, админ-функции (`/stats`, тестовый доступ) отключены |
 | `BOT_NAME` | Нет | `LabelSpy` | Отображаемое название бота в текстах и шапке отчёта |
 | `BOT_USERNAME` | Нет | *пусто* | Юзернейм бота в Telegram (без `@`) для подписи на карточке-отчёте |
-| `GEMINI_MODELS` | Нет | `gemini-3-flash-preview,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite` | Список моделей Gemini с поддержкой Vision (через запятую) в порядке приоритета |
+| `GEMINI_MODELS` | Нет | `gemini-2.5-flash,gemini-2.0-flash,gemini-1.5-flash,gemini-1.5-pro` | Список моделей Gemini с поддержкой Vision (через запятую) в порядке приоритета |
+| `HTTPS_PROXY` / `HTTP_PROXY` | Нет | — | Прокси для локального запуска в регионах с ограничениями Google Gemini (например, РФ) |
 | `FREE_SCANS_PER_MONTH` | Нет | `5` | Количество бесплатных сканирований в календарный месяц |
 | `PREMIUM_STARS_PRICE` | Нет | `50` | Стоимость подписки в Telegram Stars (XTR) |
 | `PREMIUM_SUBSCRIPTION_DAYS` | Нет | `30` | Длительность платной подписки в днях |
@@ -103,10 +104,10 @@ python bot.py
 
 ---
 
-## Кастомизация бота
+## Кастомизация бота (config.py)
 
 ### Изменение названия и юзернейма
-Просто измените параметры в `.env`:
+Вы можете задать имя через переменные в `.env` либо изменить значения по умолчанию в `config.py`:
 ```dotenv
 BOT_NAME=CleanBite
 BOT_USERNAME=CleanBiteBot
@@ -114,7 +115,7 @@ BOT_USERNAME=CleanBiteBot
 Имя обновится во всех сообщениях, меню, заголовках и инфографиках.
 
 ### Изменение цен и лимитов
-Вы можете настроить тарифы под свой проект:
+Настроить тарифы и лимиты под свой проект можно в `.env` или отредактировав константы в `config.py`:
 ```dotenv
 FREE_SCANS_PER_MONTH=10
 PREMIUM_STARS_PRICE=100

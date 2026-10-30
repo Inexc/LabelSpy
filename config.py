@@ -32,11 +32,21 @@ DEMO_PREMIUM_DAYS = int(os.getenv("DEMO_PREMIUM_DAYS", "7"))
 SCAN_COOLDOWN_SECONDS = int(os.getenv("SCAN_COOLDOWN_SECONDS", "3"))
 
 # Список моделей Gemini с поддержкой Vision (через запятую)
-_default_gemini_models = "gemini-3-flash-preview,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite"
+_default_gemini_models = "gemini-2.5-flash,gemini-2.0-flash,gemini-1.5-flash,gemini-1.5-pro"
 _raw_models = os.getenv("GEMINI_MODELS", _default_gemini_models).strip()
 GEMINI_MODELS = [m.strip() for m in _raw_models.split(",") if m.strip()]
 if not GEMINI_MODELS:
     GEMINI_MODELS = [m.strip() for m in _default_gemini_models.split(",") if m.strip()]
+
+# Прокси (необязательно, для запуска в регионах с ограничениями Google Gemini, например РФ)
+HTTPS_PROXY = os.getenv("HTTPS_PROXY", "").strip() or None
+HTTP_PROXY = os.getenv("HTTP_PROXY", "").strip() or None
+if HTTPS_PROXY:
+    os.environ["HTTPS_PROXY"] = HTTPS_PROXY
+    os.environ["https_proxy"] = HTTPS_PROXY
+if HTTP_PROXY:
+    os.environ["HTTP_PROXY"] = HTTP_PROXY
+    os.environ["http_proxy"] = HTTP_PROXY
 
 # Использование кастомных эмодзи Telegram Premium (True/False)
 USE_CUSTOM_EMOJI = os.getenv("USE_CUSTOM_EMOJI", "true").strip().lower() in ("true", "1", "yes")

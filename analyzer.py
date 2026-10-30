@@ -182,13 +182,14 @@ def validate_and_normalize_analysis(data: dict) -> dict:
 
 def is_transient_error(err_str: str) -> bool:
     """
-    Определяет, является ли ошибка временной (квоты, тайм-ауты, сбои серверов),
-    при которой имеет смысл переключиться на резервную модель.
+    Определяет, является ли ошибка временной или связанной с конкретной моделью (квоты, тайм-ауты, 404),
+    при которой имеет смысл переключиться на следующую модель в каскаде.
     """
     err_lower = err_str.lower()
     transient_indicators = [
         "429", "quota", "resourceexhausted", "503", "unavailable",
-        "500", "internal", "deadline", "timeout", "timed out", "overloaded"
+        "500", "internal", "deadline", "timeout", "timed out", "overloaded",
+        "404", "not found", "not supported for model"
     ]
     return any(ind in err_lower for ind in transient_indicators)
 
@@ -248,7 +249,12 @@ async def analyze_label(image_bytes: bytes) -> dict:
                 continue
 
         # Безопасное логирование без раскрытия деталей пользователю
-        logger.error(f"Все кандидаты моделей недоступны. Последняя ошибка: {last_error}")
+        err_detail = str(last_error or "")
+        logger.error(f"Все кандидаты моделей недоступны. Последняя ошибка: {err_detail}")
+        if "location" in err_detail.lower():
+            return {
+                "error": "Google Gemini API недоступен из вашего региона (User location is not supported). Включите VPN или настройте HTTPS_PROXY в .env."
+            }
         return {"error": "Сервис временно перегружен. Пожалуйста, повторите попытку через минуту."}
 
     finally:
